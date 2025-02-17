@@ -14,12 +14,7 @@ def main():
         data = b"Hello, World!"
         client.put_object("my-test-bucket", "hello.txt", data)
         print("Uploaded object: hello.txt")
-
-        # Get object metadata
-        metadata = client.head_object("my-test-bucket", "hello.txt")
-        print(f"Object size: {metadata.content_length} bytes")
-        print(f"Last modified: {metadata.last_modified}")
-
+        
         # Download the object
         downloaded = client.get_object("my-test-bucket", "hello.txt")
         print(f"Downloaded content: {downloaded.decode()}")

@@ -5,10 +5,11 @@ from pathlib import Path
 from datetime import datetime
 import gzip
 from typing import List, Dict, Optional, Union, Iterator
-
-from ...generated import client_storage_pb2 as pb
-from ...generated import client_storage_pb2_grpc as pb_grpc
+from dataclasses import dataclass
+from acs_sdk_python.generated import client_storage_pb2 as pb
+from acs_sdk_python.generated import client_storage_pb2_grpc as pb_grpc
 from .retry import retry
+from .types import ListObjectsOptions, HeadObjectOutput, HeadBucketOutput
 
 class ACSClient:
     """Client for Accelerated Cloud Storage service."""
