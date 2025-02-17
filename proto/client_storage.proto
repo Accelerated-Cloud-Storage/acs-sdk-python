@@ -1,0 +1,214 @@
+syntax = "proto3";
+
+package proto;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/AcceleratedCloudStorage/acs-sdk-go/generated";
+option py_generic_services = true;
+
+service ObjectStorageCache {
+  // Bucket operations
+  rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse) {}
+  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse) {}
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse) {}
+  rpc HeadBucket (HeadBucketRequest) returns (HeadBucketResponse) {}
+  
+  // Object operations
+  rpc PutObject(stream PutObjectRequest) returns (PutObjectResponse) {}
+  rpc GetObject(GetObjectRequest) returns (stream GetObjectResponse) {}
+  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse) {}
+  rpc DeleteObjects(DeleteObjectsRequest) returns (DeleteObjectsResponse) {}
+  rpc CopyObject(CopyObjectRequest) returns (CopyObjectResponse) {}
+  rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse) {}
+  rpc ListObjects(ListObjectsRequest) returns (stream ListObjectsResponse) {}
+
+  // Configuration operations 
+  rpc Authenticate(AuthRequest) returns (AuthResponse) {}
+  rpc RotateKey(RotateKeyRequest) returns (RotateKeyResponse) {}
+  rpc ShareBucket(ShareBucketRequest) returns (ShareBucketResponse) {}
+}
+
+// Request/Response messages for bucket operations
+message CreateBucketRequest {
+  string bucket = 1;
+  string region = 2;
+}
+
+message CreateBucketResponse {
+  string Location = 1; // A forward slash followed by the name of the bucket. 
+}
+
+message DeleteBucketRequest {
+  string bucket = 1;
+}
+
+message DeleteBucketResponse {
+}
+
+message ListBucketsRequest { 
+}
+
+message ListBucketsResponse {
+  repeated Bucket buckets = 1;
+  optional string prefix = 2; 
+}
+
+message HeadBucketRequest { 
+  string bucket = 1;
+}
+
+message HeadBucketResponse {
+  string bucketRegion = 1;
+}
+
+message PutObjectInput {
+  string bucket = 1;
+  string key = 2;
+  optional bool isCompressed = 3;
+}
+
+message PutObjectRequest {
+  oneof data {
+    PutObjectInput parameters = 1;
+    bytes chunk = 2;
+  }
+}
+
+message PutObjectResponse { 
+}
+
+message GetObjectRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message GetObjectResponse {
+  oneof data {
+    GetObjectMetadata metadata = 2;
+    bytes chunk = 3; 
+  }
+}
+
+message DeleteObjectRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message DeleteObjectResponse {
+}
+
+message DeleteObjectsRequest {
+  string bucket = 1;
+  repeated ObjectIdentifier objects = 2;
+}
+
+message DeleteObjectsResponse {
+  repeated DeletedObject deletedObjects = 1;
+}
+
+message CopyObjectRequest {
+  string bucket = 1;
+  string copySource = 2;
+  string key = 3;
+}
+
+message CopyObjectResponse {
+}
+
+message HeadObjectRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message HeadObjectResponse { 
+  ObjectMetadata metadata = 2;
+}
+
+message ListObjectsRequest {
+  // Required
+  string bucket = 1;
+  // Optional - filter objects by prefix
+  optional string prefix = 2;
+  // Optional - return objects after this key
+  optional string start_after = 3;
+  // Optional - limit the number of objects returned
+  optional int32 max_keys = 4;
+}
+
+message ListObjectsResponse {
+  oneof data {
+    ListObjectsMetadata metadata = 1;
+    ObjectSummary object = 2;
+  }
+}
+
+message AuthRequest {
+    string access_key_id = 1;
+    string secret_access_key = 2;
+}
+
+message AuthResponse {
+}
+
+message RotateKeyRequest {
+  string access_key_id = 1;
+  optional bool force = 2;  
+}
+
+message RotateKeyResponse {
+  bool rotated = 1;
+  string new_secret_access_key = 2;
+}
+
+message ShareBucketRequest {
+  string bucketName = 1;
+}
+
+message ShareBucketResponse {
+  
+}
+
+// Helper message types
+message GetObjectMetadata {}
+
+message ListObjectsMetadata {
+  string bucket = 1;
+  string prefix = 2;
+  string startAfter = 3;
+  int32 maxKeys = 4;
+}
+
+message Bucket {
+  string name = 1; 
+  string creation_date = 2; 
+  string bucketRegion = 3; 
+}
+
+message ObjectMetadata {
+  int64 size = 1;
+  google.protobuf.Timestamp last_modified = 2;
+  string etag = 3;
+  string content_type = 4;
+  string content_encoding = 5;
+  string content_language = 6;
+  string version_id = 7;
+  string server_side_encryption = 8;
+  map<string, string> user_metadata = 9;
+}
+
+message ObjectSummary {
+  string key = 1;
+  int64 size = 2;
+  google.protobuf.Timestamp last_modified = 3;
+  string etag = 4;
+}
+
+message ObjectIdentifier {
+    string key = 1;
+}
+
+message DeletedObject {
+    string key = 1;
+}
+
