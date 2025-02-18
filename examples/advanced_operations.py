@@ -1,13 +1,14 @@
 from acs_sdk_python.client import ACSClient
 from acs_sdk_python.client.types import ListObjectsOptions
 import os
+import uuid
 
 def main():
     client = ACSClient()
 
     try:
         # Create a bucket with error handling
-        bucket = "my-test-bucket"
+        bucket = f"my-test-bucket-{uuid.uuid4()}"
         try:
             client.create_bucket(bucket, "us-east-1")
         except Exception as e:
@@ -15,9 +16,20 @@ def main():
             return
 
         # Read and upload a large file with compression
-        with open("large_file.dat", "rb") as f:
-            data = f.read()
-            client.put_object(bucket, "large_file.dat", data)
+        # Create a large file for upload before the test
+        test_data = b"Sample data for large file upload." * 1024  # Adjust size as needed
+        try:
+            with open("large_file.dat", "wb") as f:
+                f.write(test_data)
+            
+            # Read and upload the large file
+            with open("large_file.dat", "rb") as f:
+                data = f.read()
+                client.put_object(bucket, "large_file.dat", data)
+        finally:
+            # Delete the file after the test
+            if os.path.exists("large_file.dat"):
+                os.remove("large_file.dat")
 
         # List objects with filtering
         options = ListObjectsOptions(
@@ -37,29 +49,45 @@ def main():
                 print(f"Failed to delete some objects: {e}")
 
         # Copy objects between buckets
+        destBucket = f"my-destination-bucket-{uuid.uuid4()}"
+        try:
+            client.create_bucket(destBucket, "us-east-1")
+        except Exception as e:
+            print(f"Failed to create bucket: {e}")
+            return
+        try:
+            client.put_object(bucket, "copied_file.dat", b"")
+        except Exception as e:
+            print(f"Failed to create object: {e}")
+            return
         try:
             client.copy_object(
-                "destination-bucket",
-                f"{bucket}/large_file.dat",
+                destBucket,
+                f"{bucket}/copied_file.dat",
                 "copied_file.dat"
             )
             print("Successfully copied object")
         except Exception as e:
             print(f"Failed to copy object: {e}")
 
-        # Share a bucket
-        try:
-            client.share_bucket("shared-bucket")
-            print("Successfully shared bucket")
-        except Exception as e:
-            print(f"Failed to share bucket: {e}")
-
-        # Force key rotation
+        # Force key rotation due to security issues with the current key
         try:
             client.rotate_key(force=True)
             print("Successfully rotated key")
         except Exception as e:
             print(f"Failed to rotate key: {e}")
+
+        # Delete bucket with error handling
+        try:
+            client.delete_object(bucket, "copied_file.dat")
+        except Exception as e:
+            print(f"Failed to create object: {e}")
+            return
+        try:
+            client.delete_bucket(bucket)
+        except Exception as e:
+            print(f"Failed to create bucket: {e}")
+            return
 
     finally:
         client.close()

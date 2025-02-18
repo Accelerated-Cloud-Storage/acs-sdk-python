@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from acs_sdk_python.generated import client_storage_pb2 as pb
 from acs_sdk_python.generated import client_storage_pb2_grpc as pb_grpc
 from .retry import retry
-from .types import ListObjectsOptions, HeadObjectOutput, HeadBucketOutput
+from .types import *
+from .exceptions import *
 
 class ACSClient:
     """Client for Accelerated Cloud Storage service."""
@@ -164,6 +165,7 @@ class ACSClient:
         except grpc.RpcError as e:
             raise ObjectError(f"Failed to delete object: {e.details()}") from e
 
+    @retry()
     def delete_objects(self, bucket: str, keys: List[str]) -> None:
         """Delete multiple objects from a bucket."""
         try:
@@ -175,27 +177,36 @@ class ACSClient:
                 raise ObjectError("Some objects failed to delete")
         except grpc.RpcError as e:
             raise ObjectError(f"Failed to delete objects: {e.details()}") from e
-
+    
+    @retry()
     def head_object(self, bucket: str, key: str) -> HeadObjectOutput:
         """Get object metadata without downloading the object."""
         try:
             request = pb.HeadObjectRequest(bucket=bucket, key=key)
+            print("Sending head object request")
             response = self.client.HeadObject(request)
             
+            if not response or not response.metadata:
+                raise ObjectError("No metadata received", operation="HEAD")
+            
+            # Use getattr to safely access fields with defaults
             return HeadObjectOutput(
-                content_type=response.metadata.content_type,
-                content_encoding=response.metadata.content_encoding,
-                content_language=response.metadata.content_language,
-                content_length=response.metadata.size,
-                last_modified=response.metadata.last_modified.ToDatetime(),
-                etag=response.metadata.etag,
-                user_metadata=response.metadata.user_metadata,
-                server_side_encryption=response.metadata.server_side_encryption,
-                version_id=response.metadata.version_id
+                content_type=getattr(response.metadata, 'content_type', ''),
+                content_encoding=getattr(response.metadata, 'content_encoding', None),
+                content_language=getattr(response.metadata, 'content_language', None),
+                content_length=getattr(response.metadata, 'size', 0),
+                last_modified=getattr(response.metadata, 'last_modified', datetime.now()).ToDatetime(),
+                etag=getattr(response.metadata, 'etag', ''),
+                user_metadata=getattr(response.metadata, 'user_metadata', {}),
+                server_side_encryption=getattr(response.metadata, 'server_side_encryption', None),
+                version_id=getattr(response.metadata, 'version_id', None)
             )
         except grpc.RpcError as e:
-            raise ObjectError(f"Failed to get object metadata: {e.details()}") from e
-
+            raise ObjectError(f"Failed to get object metadata: {e.details()}", operation="HEAD") from e
+        except Exception as e:
+            raise ObjectError(f"Unexpected error in head_object: {str(e)}", operation="HEAD") from e
+    
+    @retry()
     def list_objects(self, bucket: str, options: Optional[ListObjectsOptions] = None) -> Iterator[str]:
         """List objects in a bucket with optional filtering."""
         try:
@@ -214,7 +225,8 @@ class ACSClient:
                     yield response.object.key
         except grpc.RpcError as e:
             raise BucketError(f"Failed to list objects: {e.details()}") from e
-
+    
+    @retry()
     def copy_object(self, bucket: str, copy_source: str, key: str) -> None:
         """Copy an object within or between buckets."""
         try:
@@ -226,7 +238,8 @@ class ACSClient:
             self.client.CopyObject(request)
         except grpc.RpcError as e:
             raise ObjectError(f"Failed to copy object: {e.details()}") from e
-
+    
+    @retry()
     def head_bucket(self, bucket: str) -> HeadBucketOutput:
         """Get bucket metadata."""
         try:
@@ -236,6 +249,7 @@ class ACSClient:
         except grpc.RpcError as e:
             raise BucketError(f"Failed to get bucket metadata: {e.details()}") from e
 
+    @retry()
     def rotate_key(self, force: bool = False) -> None:
         """Rotate access keys if needed or forced."""
         try:
@@ -265,7 +279,7 @@ class ACSClient:
             yaml.dump(profiles, f)
 
     def share_bucket(self, bucket: str) -> None:
-        """Share a bucket with the service."""
+        """Share a bucket with the service after updating your bucket's permissons."""
         try:
             request = pb.ShareBucketRequest(bucketName=bucket)
             self.client.ShareBucket(request)
