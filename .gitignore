@@ -4,7 +4,6 @@
 .DS_Store
 **/*.pyc
 __pycache__
-docs/build
 
 # Common virtualenv names
 .venv

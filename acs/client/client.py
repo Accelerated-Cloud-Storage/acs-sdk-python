@@ -6,8 +6,8 @@ from datetime import datetime
 import gzip
 from typing import List, Dict, Optional, Union, Iterator
 from dataclasses import dataclass
-from acs.generated import client_storage_pb2 as pb
-from acs.generated import client_storage_pb2_grpc as pb_grpc
+from acs.internal.generated import client_storage_pb2 as pb
+from acs.internal.generated import client_storage_pb2_grpc as pb_grpc
 from .retry import retry
 from .types import *
 from .exceptions import *
@@ -20,7 +20,7 @@ class ACSClient:
     # Constants 
     SERVER_ADDRESS = "acceleratedcloudstorages3cache.com:50050"
     CHUNK_SIZE = 64 * 1024  # 64KB chunks for streaming
-    COMPRESSION_THRESHOLD = 1 * 1024 * 1024  # 1MB threshold for compression
+    COMPRESSION_THRESHOLD = 100 * 1024 * 1024  # 100MB threshold for compression
 
     def __init__(self):
         """Initialize the ACSClient.
