@@ -1,0 +1,23 @@
+# Repo specific
+**/*.egg-info/
+.pytest_cache/*
+.DS_Store
+**/*.pyc
+__pycache__
+dist/*
+
+# Common virtualenv names
+.venv
+venv
+env2
+env3
+
+# Virtualenv support files and directories
+.python-version
+
+# IntelliJ / PyCharm IDE
+.idea/
+
+# Visual Studio used to edit docs
+docs/source/.vs
+.vscode
