@@ -1,5 +1,5 @@
 [project]
-name = "acs"
+name = "acs-sdk"
 version = "0.1.0"
 description = "Python SDK for Accelerated Cloud Storage service"
 readme = "README.md"
@@ -11,7 +11,7 @@ urls = { "Homepage" = "https://github.com/AcceleratedCloudStorage/acs-sdk-python
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Mozilla Public License Version 2.0",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -27,7 +27,7 @@ dependencies = [
     "grpcio-tools>=1.70.0",
     "PyYAML>=6.0.2",
     "protobuf>=5.29.3",
-    "iniconfig>=2.1.1",
+    "iniconfig>=2.0.0",
     "pluggy>=1.5.0",
     "protobuf>=5.29.3",
     "setuptools>=75.8.0",

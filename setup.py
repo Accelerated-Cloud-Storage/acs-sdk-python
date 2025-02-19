@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="acs",
+    name="acs-sdk",
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
@@ -9,7 +9,7 @@ setup(
         "grpcio-tools>=1.70.0",
         "PyYAML>=6.0.2",
         "protobuf>=5.29.3",
-        "iniconfig>=2.1.1",
+        "iniconfig>=2.0.0",
         "pluggy>=1.5.0",
         "protobuf>=5.29.3",
         "setuptools>=75.8.0",

@@ -6,8 +6,8 @@ from datetime import datetime
 import gzip
 from typing import List, Dict, Optional, Union, Iterator
 from dataclasses import dataclass
-from acs.internal.generated import client_storage_pb2 as pb
-from acs.internal.generated import client_storage_pb2_grpc as pb_grpc
+from acs_sdk.internal.generated import client_storage_pb2 as pb
+from acs_sdk.internal.generated import client_storage_pb2_grpc as pb_grpc
 from .retry import retry
 from .types import *
 from .exceptions import *

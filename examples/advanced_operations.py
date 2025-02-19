@@ -1,5 +1,5 @@
-from acs.client import ACSClient
-from acs.client.types import ListObjectsOptions
+from acs_sdk.client import ACSClient
+from acs_sdk.client.types import ListObjectsOptions
 import os
 import uuid
 
