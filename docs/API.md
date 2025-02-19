@@ -24,12 +24,7 @@
   * [ObjectError](#exceptions.ObjectError)
   * [ConfigurationError](#exceptions.ConfigurationError)
 * [client](#client)
-  * [\*](#client.*)
-  * [\*](#client.*)
   * [ACSClient](#client.ACSClient)
-    * [SERVER\_ADDRESS](#client.ACSClient.SERVER_ADDRESS)
-    * [CHUNK\_SIZE](#client.ACSClient.CHUNK_SIZE)
-    * [COMPRESSION\_THRESHOLD](#client.ACSClient.COMPRESSION_THRESHOLD)
     * [close](#client.ACSClient.close)
     * [create\_bucket](#client.ACSClient.create_bucket)
     * [delete\_bucket](#client.ACSClient.delete_bucket)
@@ -239,12 +234,6 @@ Exception raised for configuration or credential errors.
 
 <a id="client.*"></a>
 
-## \*
-
-<a id="client.*"></a>
-
-## \*
-
 <a id="client.ACSClient"></a>
 
 ## ACSClient Objects
@@ -254,22 +243,6 @@ class ACSClient()
 ```
 
 ACSClient is a client for the Accelerated Cloud Storage (ACS) service. It provides methods to interact with the ACS service, including creating, deleting, and listing buckets and objects, as well as uploading and downloading data.
-
-<a id="client.ACSClient.SERVER_ADDRESS"></a>
-
-## ACSClient.SERVER\_ADDRESS
-
-<a id="client.ACSClient.CHUNK_SIZE"></a>
-
-## ACSClient.CHUNK\_SIZE
-
-64KB chunks for streaming
-
-<a id="client.ACSClient.COMPRESSION_THRESHOLD"></a>
-
-## ACSClient.COMPRESSION\_THRESHOLD
-
-100MB threshold for compression
 
 <a id="client.ACSClient.close"></a>
 

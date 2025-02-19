@@ -1,3 +1,4 @@
+# Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
 from acs_sdk.client import ACSClient
 from acs_sdk.client.types import ListObjectsOptions
 import os
