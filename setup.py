@@ -7,8 +7,12 @@ setup(
     install_requires=[
         "grpcio>=1.70.0",
         "grpcio-tools>=1.70.0",
-        "PyYAML>=5.1",
-        "protobuf>=4.25.1"
+        "PyYAML>=6.0.2",
+        "protobuf>=5.29.3",
+        "iniconfig>=2.1.1",
+        "pluggy>=1.5.0",
+        "protobuf>=5.29.3",
+        "setuptools>=75.8.0",
     ],
     extras_require={
         'dev': [
@@ -35,5 +39,7 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
 )

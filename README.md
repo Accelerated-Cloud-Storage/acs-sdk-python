@@ -24,6 +24,7 @@ default:
     secret_access_key = YOUR_SECRET
 ```
 Note: You can include multiple profiles and set them using the ACS_PROFILE environment variable. 
+
 #### Initialize project
 Assuming that you have a supported version of Python installed, you can first set up your environment with:
 ```python
@@ -33,6 +34,12 @@ source .venv/bin/activate
 Then, you can install acs from PyPI with:
 ```python
 python -m pip install acs
+```
+Or you can install it from source (preferred)
+```
+$ git clone https://github.com/AcceleratedCloudStorage/acs-sdk-python
+$ python -m pip install -r requirements.txt
+$ python -m pip install -e .
 ```
 #### Write Code
 Check out the example folder. 
