@@ -12,7 +12,7 @@ Jump To:
 * [Getting Help](#getting-help)
 
 ## Getting started
-[![SDK Documentation](https://img.shields.io/badge/SDK-Documentation-blue)](https://acceleratedcloudstorage.com) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)]() [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales) 
+[![Python](https://img.shields.io/badge/pypi-blue)](https://pypi.org/project/acs-sdk) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)](https://github.com/AcceleratedCloudStorage/acs-sdk-python/docs/API.md) [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales)
 
 #### Setup credientials 
 Downloading your credentials from the console on the [website](https://acceleratedcloudstorage.com).
