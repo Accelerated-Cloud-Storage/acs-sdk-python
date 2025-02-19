@@ -4,7 +4,6 @@ package proto;
 
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/AcceleratedCloudStorage/acs-sdk-go/generated";
 option py_generic_services = true;
 
 service ObjectStorageCache {
