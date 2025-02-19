@@ -6,7 +6,6 @@ from .exceptions import ACSError
 
 RETRYABLE_STATUS_CODES = {
     grpc.StatusCode.UNAVAILABLE,
-    grpc.StatusCode.INTERNAL,
     grpc.StatusCode.RESOURCE_EXHAUSTED,
     grpc.StatusCode.DEADLINE_EXCEEDED
 }

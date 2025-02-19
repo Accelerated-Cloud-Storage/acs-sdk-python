@@ -1,5 +1,6 @@
 LICENSE
 README.md
+pyproject.toml
 setup.py
 acs_sdk_python/__init__.py
 acs_sdk_python.egg-info/PKG-INFO
@@ -15,3 +16,4 @@ acs_sdk_python/client/types.py
 acs_sdk_python/generated/__init__.py
 acs_sdk_python/generated/client_storage_pb2.py
 acs_sdk_python/generated/client_storage_pb2_grpc.py
+tests/test_integration.py
