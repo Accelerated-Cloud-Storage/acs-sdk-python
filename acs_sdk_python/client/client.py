@@ -13,14 +13,21 @@ from .types import *
 from .exceptions import *
 
 class ACSClient:
-    """Client for Accelerated Cloud Storage service."""
+    """
+    ACSClient is a client for the Accelerated Cloud Storage (ACS) service. It provides methods to interact with the ACS service, including creating, deleting, and listing buckets and objects, as well as uploading and downloading data.
+    """
     
+    # Constants 
     SERVER_ADDRESS = "acceleratedcloudstorages3cache.com:50050"
     CHUNK_SIZE = 64 * 1024  # 64KB chunks for streaming
     COMPRESSION_THRESHOLD = 1 * 1024 * 1024  # 1MB threshold for compression
 
     def __init__(self):
-        """Initialize the ACS client with authentication and connection setup."""
+        """Initialize the ACSClient.
+
+        Sets up a secure gRPC channel, loads credentials, authenticates,
+        and checks for key rotation.
+        """
         # Setup secure channel
         creds = grpc.ssl_channel_credentials()
         options = [
@@ -42,11 +49,20 @@ class ACSClient:
         self._check_key_rotation(creds)
 
     def close(self):
-        """Close the gRPC channel."""
+        """Close the client."""
         self.channel.close()
 
     def _load_credentials(self) -> dict:
-        """Load credentials from ~/.acs/credentials.yaml file."""
+        """Load credentials from ~/.acs/credentials.yaml.
+
+        Creates the credentials file with default values if it does not exist.
+
+        Returns:
+            dict: The credentials for the active profile.
+
+        Raises:
+            ValueError: If the active profile is not found in the credentials.
+        """
         creds_path = Path.home() / '.acs' / 'credentials.yaml'
         
         # Create directory if needed
@@ -74,7 +90,11 @@ class ACSClient:
         return profiles[profile]
 
     def _authenticate(self, creds: dict):
-        """Authenticate with the ACS service."""
+        """Authenticate with the ACS service.
+
+        Args:
+            creds (dict): The credentials containing access and secret keys.
+        """
         request = pb.AuthRequest(
             access_key_id=creds['access_key_id'],
             secret_access_key=creds['secret_access_key']
@@ -82,7 +102,11 @@ class ACSClient:
         self.client.Authenticate(request)
 
     def _check_key_rotation(self, creds: dict):
-        """Check if key rotation is needed."""
+        """Check and perform key rotation if necessary.
+
+        Args:
+            creds (dict): The credentials used for authentication.
+        """
         try:
             self.rotate_key(False)
         except Exception as e:
@@ -90,7 +114,15 @@ class ACSClient:
 
     @retry()
     def create_bucket(self, bucket: str, region: str) -> None:
-        """Create a new bucket in the specified region."""
+        """Create a new bucket in the specified region.
+
+        Args:
+            bucket (str): The bucket name.
+            region (str): The region in which to create the bucket.
+
+        Raises:
+            BucketError: If bucket creation fails.
+        """
         request = pb.CreateBucketRequest(bucket=bucket, region=region)
         try:
             self.client.CreateBucket(request)
@@ -99,24 +131,37 @@ class ACSClient:
 
     @retry()
     def delete_bucket(self, bucket: str) -> None:
-        """Delete a bucket."""
+        """Delete a bucket.
+
+        Args:
+            bucket (str): The bucket name.
+        """
         request = pb.DeleteBucketRequest(bucket=bucket)
         self.client.DeleteBucket(request)
 
     @retry()
     def list_buckets(self) -> List[pb.Bucket]:
-        """List all buckets."""
+        """List all buckets.
+
+        Returns:
+            List[pb.Bucket]: A list of buckets.
+        """
         request = pb.ListBucketsRequest()
         response = self.client.ListBuckets(request)
         return list(response.buckets)
 
     @retry()
     def put_object(self, bucket: str, key: str, data: bytes) -> None:
-        """Upload data to a bucket."""
-        # Check if compression would be beneficial
+        """Upload data to a bucket with optional compression.
+
+        Args:
+            bucket (str): The bucket name.
+            key (str): The object key.
+            data (bytes): The data to upload.
+        """
         is_compressed = False
         if len(data) >= self.COMPRESSION_THRESHOLD:
-            compressed = gzip.compress(data, compresslevel=1)  # Fastest compression
+            compressed = gzip.compress(data, compresslevel=1)
             if len(compressed) < len(data):
                 data = compressed
                 is_compressed = True
@@ -130,7 +175,6 @@ class ACSClient:
                     isCompressed=is_compressed
                 )
             )
-            
             # Send data chunks
             for i in range(0, len(data), self.CHUNK_SIZE):
                 chunk = data[i:i + self.CHUNK_SIZE]
@@ -140,12 +184,21 @@ class ACSClient:
 
     @retry()
     def get_object(self, bucket: str, key: str) -> bytes:
-        """Download an object from a bucket."""
+        """Download an object from a bucket.
+
+        Args:
+            bucket (str): The bucket name.
+            key (str): The object key.
+
+        Returns:
+            bytes: The downloaded object data.
+
+        Raises:
+            ObjectError: If retrieval fails.
+        """
         try:
             request = pb.GetObjectRequest(bucket=bucket, key=key)
             response_stream = self.client.GetObject(request)
-            
-            # Skip metadata message and collect chunks
             first_message = True
             chunks = []
             for response in response_stream:
@@ -161,7 +214,15 @@ class ACSClient:
 
     @retry()
     def delete_object(self, bucket: str, key: str) -> None:
-        """Delete a single object from a bucket."""
+        """Delete a single object from a bucket.
+
+        Args:
+            bucket (str): The bucket name.
+            key (str): The object key.
+
+        Raises:
+            ObjectError: If deletion fails.
+        """
         try:
             request = pb.DeleteObjectRequest(bucket=bucket, key=key)
             self.client.DeleteObject(request)
@@ -170,7 +231,15 @@ class ACSClient:
 
     @retry()
     def delete_objects(self, bucket: str, keys: List[str]) -> None:
-        """Delete multiple objects from a bucket."""
+        """Delete multiple objects from a bucket.
+
+        Args:
+            bucket (str): The bucket name.
+            keys (List[str]): A list of object keys to delete.
+
+        Raises:
+            ObjectError: If deletion fails.
+        """
         try:
             objects = [pb.ObjectIdentifier(key=key) for key in keys]
             request = pb.DeleteObjectsRequest(bucket=bucket, objects=objects)
@@ -183,7 +252,18 @@ class ACSClient:
     
     @retry()
     def head_object(self, bucket: str, key: str) -> HeadObjectOutput:
-        """Get object metadata without downloading the object."""
+        """Retrieve metadata for an object without downloading it.
+
+        Args:
+            bucket (str): The bucket name.
+            key (str): The object key.
+
+        Returns:
+            HeadObjectOutput: The metadata of the object.
+
+        Raises:
+            ObjectError: If metadata retrieval fails.
+        """
         try:
             request = pb.HeadObjectRequest(bucket=bucket, key=key)
             print("Sending head object request")
@@ -192,7 +272,6 @@ class ACSClient:
             if not response or not response.metadata:
                 raise ObjectError("No metadata received", operation="HEAD")
             
-            # Use getattr to safely access fields with defaults
             return HeadObjectOutput(
                 content_type=getattr(response.metadata, 'content_type', ''),
                 content_encoding=getattr(response.metadata, 'content_encoding', None),
@@ -211,7 +290,18 @@ class ACSClient:
     
     @retry()
     def list_objects(self, bucket: str, options: Optional[ListObjectsOptions] = None) -> Iterator[str]:
-        """List objects in a bucket with optional filtering."""
+        """List objects in a bucket with optional filtering.
+
+        Args:
+            bucket (str): The bucket name.
+            options (Optional[ListObjectsOptions], optional): Filtering options.
+
+        Yields:
+            Iterator[str]: Object keys.
+        
+        Raises:
+            BucketError: If listing fails.
+        """
         try:
             request = pb.ListObjectsRequest(bucket=bucket)
             if options:
@@ -231,7 +321,16 @@ class ACSClient:
     
     @retry()
     def copy_object(self, bucket: str, copy_source: str, key: str) -> None:
-        """Copy an object within or between buckets."""
+        """Copy an object within or between buckets.
+
+        Args:
+            bucket (str): The destination bucket name.
+            copy_source (str): The source object identifier.
+            key (str): The destination object key.
+
+        Raises:
+            ObjectError: If the copy operation fails.
+        """
         try:
             request = pb.CopyObjectRequest(
                 bucket=bucket,
@@ -244,7 +343,17 @@ class ACSClient:
     
     @retry()
     def head_bucket(self, bucket: str) -> HeadBucketOutput:
-        """Get bucket metadata."""
+        """Retrieve metadata for a bucket.
+
+        Args:
+            bucket (str): The bucket name.
+
+        Returns:
+            HeadBucketOutput: Bucket metadata including region.
+
+        Raises:
+            BucketError: If the operation fails.
+        """
         try:
             request = pb.HeadBucketRequest(bucket=bucket)
             response = self.client.HeadBucket(request)
@@ -254,7 +363,14 @@ class ACSClient:
 
     @retry()
     def rotate_key(self, force: bool = False) -> None:
-        """Rotate access keys if needed or forced."""
+        """Rotate access keys.
+
+        Args:
+            force (bool, optional): Whether to force key rotation even if not needed.
+
+        Raises:
+            ConfigurationError: If key rotation fails.
+        """
         try:
             creds = self._load_credentials()
             request = pb.RotateKeyRequest(
@@ -269,7 +385,11 @@ class ACSClient:
             raise ConfigurationError(f"Failed to rotate key: {e.details()}") from e
 
     def _update_credentials(self, new_secret_key: str) -> None:
-        """Update credentials file with new secret key."""
+        """Update the stored credentials with a new secret key.
+
+        Args:
+            new_secret_key (str): The new secret access key.
+        """
         creds_path = Path.home() / '.acs' / 'credentials.yaml'
         profile = os.getenv('ACS_PROFILE', 'default')
         
@@ -281,8 +401,16 @@ class ACSClient:
         with open(creds_path, 'w') as f:
             yaml.dump(profiles, f)
 
+    @retry()
     def share_bucket(self, bucket: str) -> None:
-        """Share a bucket with the service after updating your bucket's permissons."""
+        """Share a bucket with the ACS service.
+
+        Args:
+            bucket (str): The bucket name.
+
+        Raises:
+            BucketError: If sharing fails.
+        """
         try:
             request = pb.ShareBucketRequest(bucketName=bucket)
             self.client.ShareBucket(request)

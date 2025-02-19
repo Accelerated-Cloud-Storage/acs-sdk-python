@@ -1,14 +1,19 @@
+# Repo specific
 **/*.egg-info/
 .pytest_cache/*
 .DS_Store
-*.pyc
+**/*.pyc
 __pycache__
+docs/build
 
 # Common virtualenv names
 .venv
 venv
 env2
 env3
+
+# Virtualenv support files and directories
+.python-version
 
 # IntelliJ / PyCharm IDE
 .idea/

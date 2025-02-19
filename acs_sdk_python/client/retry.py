@@ -17,19 +17,37 @@ def retry(
     backoff_multiplier: float = 2.0,
     retryable_exceptions: Tuple[Type[Exception], ...] = (grpc.RpcError,)
 ) -> Callable:
-    """
-    Retry decorator with exponential backoff for gRPC operations.
-    
+    """Decorator for retrying a function with exponential backoff.
+
     Args:
-        max_attempts: Maximum number of retry attempts
-        initial_backoff: Initial backoff time in seconds
-        max_backoff: Maximum backoff time in seconds
-        backoff_multiplier: Multiplier for exponential backoff
-        retryable_exceptions: Tuple of exceptions that should trigger a retry
+        max_attempts (int): Maximum number of retry attempts.
+        initial_backoff (float): Initial backoff time in seconds.
+        max_backoff (float): Maximum backoff time in seconds.
+        backoff_multiplier (float): Multiplier for exponential backoff.
+        retryable_exceptions (Tuple[Type[Exception], ...]): Exceptions that trigger a retry.
+
+    Returns:
+        Callable: A decorator that wraps the function.
     """
     def decorator(func: Callable) -> Callable:
+        """Wraps a function to add retry logic.
+
+        Args:
+            func (Callable): The function to be retried.
+
+        Returns:
+            Callable: The wrapped function.
+        """
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            """Executes the function with retry logic and exponential backoff.
+
+            Returns:
+                Any: Result of the function call.
+
+            Raises:
+                ACSError: If all retry attempts fail.
+            """
             last_exception = None
             backoff = initial_backoff
 
@@ -53,7 +71,6 @@ def retry(
                         time.sleep(backoff)
                         backoff = min(backoff * backoff_multiplier, max_backoff)
 
-            # If we get here, we've exhausted our retries
             raise ACSError(f"Operation failed after {max_attempts} attempts") from last_exception
 
         return wrapper
