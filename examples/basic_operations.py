@@ -1,4 +1,4 @@
-from acs_sdk_python.client import ACSClient
+from acs.client import ACSClient
 import time
 import uuid
 

@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="acs-sdk-python",
+    name="acs",
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
@@ -20,7 +20,7 @@ setup(
     },
     python_requires='>=3.8',
     author="AcceleratedCloudStorage",
-    author_email="support@acceleratedcloudstorage.com",
+    author_email="sales@acceleratedcloudstorage.com",
     description="Python SDK for Accelerated Cloud Storage service",
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
