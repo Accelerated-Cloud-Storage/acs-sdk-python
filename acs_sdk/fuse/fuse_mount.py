@@ -49,6 +49,7 @@ class ACSFuse(Operations):
             # First try to get object metadata directly
             try:
                 metadata = self.client.head_object(self.bucket, key)
+                print(f"Found object {key}")
                 return {**base_stat,
                         'st_mode': 0o100644,
                         'st_size': metadata.content_length,
@@ -65,8 +66,9 @@ class ACSFuse(Operations):
                 # Filter to only include objects that start with dir_key
                 objects = [obj for obj in all_objects if obj.startswith(dir_key)]
                 if objects:
+                    print(f"Found directory {dir_key}")
                     return {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2}
-                
+
                 print(f"Path not found: {path}")
                 raise FuseOSError(errno.ENOENT)
                 
@@ -121,7 +123,7 @@ class ACSFuse(Operations):
                         rel_path = rel_path[:-1]
                         
                     entries.add(rel_path)
-                
+                print(f"Found {len(entries)} entries")
                 return list(entries)
             except Exception as e:
                 print(f"Error listing objects: {str(e)}")
@@ -138,6 +140,7 @@ class ACSFuse(Operations):
         key = self._get_path(path)
         try:
             data = self.client.get_object(self.bucket, key)
+            print(f"Read {len(data)} bytes from {key} at offset {offset}")
             return data[offset:offset + size]
         except:
             raise FuseOSError(errno.EIO)
@@ -163,6 +166,7 @@ class ACSFuse(Operations):
 
             # Write back
             self.client.put_object(self.bucket, key, new_data)
+            print(f"Wrote {len(data)} bytes to {key} at offset {offset}")
             return len(data)
         except:
             raise FuseOSError(errno.EIO)
@@ -181,6 +185,7 @@ class ACSFuse(Operations):
             self.client.delete_object(self.bucket, key)
         except:
             raise FuseOSError(errno.EIO)
+        print(f"Deleted file {key}")
 
     def mkdir(self, path, mode):
         """Create a directory."""
@@ -205,6 +210,26 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.ENOTEMPTY)
             
         self.client.delete_object(self.bucket, key)
+        print(f"Deleted directory {key}")
+    
+    def truncate(self, path, length, fh=None):
+        """Truncate file to specified length."""
+        try:
+            key = self._get_path(path)
+            try:
+                data = self.client.get_object(self.bucket, key)
+            except:
+                data = b""
+                
+            if length < len(data):
+                data = data[:length]
+            elif length > len(data):
+                data += b'\x00' * (length - len(data))
+                
+            self.client.put_object(self.bucket, key, data)
+        except Exception as e:
+            print(f"Truncate error for {path}: {str(e)}")
+            raise FuseOSError(errno.EIO)
 
 def mount(bucket: str, mountpoint: str, foreground: bool = True):
     """Mount an ACS bucket at the specified mountpoint.
@@ -220,6 +245,8 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
         'nonempty': True,
         'debug': True,
         'default_permissions': True,
+        'direct_io': True,
+        'rw': True, 
     }
     FUSE(ACSFuse(bucket), mountpoint, **options)
 
