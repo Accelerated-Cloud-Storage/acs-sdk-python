@@ -264,7 +264,7 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
         'direct_io': True,
         'rw': True,
         'big_writes': True,
-        'max_read': 1024 * 1024,  # 1 MB 
+        'max_read': 100 * 1024 * 1024,  # 100 MB 
     }
     FUSE(ACSFuse(bucket), mountpoint, **options)
 
