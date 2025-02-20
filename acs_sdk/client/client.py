@@ -29,25 +29,38 @@ class ACSClient:
         Sets up a secure gRPC channel, loads credentials, authenticates,
         and checks for key rotation.
         """
-        # Setup secure channel
+        # Setup secure channel with improved settings
         creds = grpc.ssl_channel_credentials()
         options = [
-            ('grpc.max_send_message_length', 1024 * 1024 * 1024),  # 1GB
-            ('grpc.max_receive_message_length', 1024 * 1024 * 1024),  # 1GB
-            ('grpc.keepalive_time_ms', 20000),  # 20 seconds
-            ('grpc.keepalive_timeout_ms', 60000),  # 60 seconds
+            ('grpc.max_send_message_length', 1024 * 1024 * 1024),
+            ('grpc.max_receive_message_length', 1024 * 1024 * 1024),
+            ('grpc.keepalive_time_ms', 10000),  # More aggressive keepalive
+            ('grpc.keepalive_timeout_ms', 5000),
+            ('grpc.keepalive_permit_without_calls', True),
             ('grpc.http2.max_pings_without_data', 0),
             ('grpc.http2.min_time_between_pings_ms', 10000),
-            ('grpc.http2.min_ping_interval_without_data_ms', 5000),
+            ('grpc.enable_retries', 1),
+            ('grpc.max_connection_idle_ms', 60000),
+            ('grpc.max_connection_age_ms', 300000),
+            ('grpc.max_connection_age_grace_ms', 5000),
         ]
         
         self.channel = grpc.secure_channel(self.SERVER_ADDRESS, creds, options=options)
+        self._setup_channel_connectivity()
         self.client = pb_grpc.ObjectStorageCacheStub(self.channel)
         
         # Load and authenticate
         creds = self._load_credentials()
         self._authenticate(creds)
         self._check_key_rotation(creds)
+
+    def _setup_channel_connectivity(self):
+        """Setup channel connectivity monitoring and callbacks."""
+        def _on_channel_state_change(state):
+            if state == grpc.ChannelConnectivity.TRANSIENT_FAILURE:
+                self.channel.subscribe(lambda s: None, try_to_connect=True)
+        
+        self.channel.subscribe(_on_channel_state_change, try_to_connect=True)
 
     def close(self):
         """Close the client."""
@@ -267,7 +280,6 @@ class ACSClient:
         """
         try:
             request = pb.HeadObjectRequest(bucket=bucket, key=key)
-            print("Sending head object request")
             response = self.client.HeadObject(request)
             
             if not response or not response.metadata:
@@ -302,7 +314,7 @@ class ACSClient:
         
         Raises:
             BucketError: If listing fails.
-        """
+        """        
         try:
             request = pb.ListObjectsRequest(bucket=bucket)
             if options:
@@ -313,12 +325,26 @@ class ACSClient:
                 if options.max_keys:
                     request.max_keys = options.max_keys
 
-            response_stream = self.client.ListObjects(request)
-            for response in response_stream:
-                if response.HasField('object'):
-                    yield response.object.key
+            # Buffer all responses to handle connection issues
+            all_keys = []
+            response_stream = self.client.ListObjects(request, timeout=30)
+            
+            try:
+                for response in response_stream:
+                    if response.HasField('object'):
+                        all_keys.append(response.object.key)
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.UNAVAILABLE:
+                    # Force channel reconnection
+                    self.channel.subscribe(lambda s: None, try_to_connect=True)
+                raise
+
+            # Yield from buffered keys
+            for key in all_keys:
+                yield key
+
         except grpc.RpcError as e:
-            raise BucketError(f"Failed to list objects: {e.details()}") from e
+            raise BucketError(f"Failed to list objects: {e.details()}", operation="LIST") from e
     
     @retry()
     def copy_object(self, bucket: str, copy_source: str, key: str) -> None:
@@ -417,3 +443,4 @@ class ACSClient:
             self.client.ShareBucket(request)
         except grpc.RpcError as e:
             raise BucketError(f"Failed to share bucket: {e.details()}") from e
+

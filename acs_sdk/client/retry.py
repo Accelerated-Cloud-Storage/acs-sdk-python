@@ -8,13 +8,14 @@ from .exceptions import ACSError
 RETRYABLE_STATUS_CODES = {
     grpc.StatusCode.UNAVAILABLE,
     grpc.StatusCode.RESOURCE_EXHAUSTED,
-    grpc.StatusCode.DEADLINE_EXCEEDED
+    grpc.StatusCode.DEADLINE_EXCEEDED,
+    grpc.StatusCode.INTERNAL
 }
 
 def retry(
-    max_attempts: int = 3,
+    max_attempts: int = 5,  # Increased default attempts
     initial_backoff: float = 0.1,
-    max_backoff: float = 1.0,
+    max_backoff: float = 5.0,  # Increased max backoff
     backoff_multiplier: float = 2.0,
     retryable_exceptions: Tuple[Type[Exception], ...] = (grpc.RpcError,)
 ) -> Callable:
@@ -59,11 +60,14 @@ def retry(
                     last_exception = e
                     
                     if isinstance(e, grpc.RpcError):
+                        # Get status code with better error handling
                         status_code = grpc.StatusCode.UNKNOWN
                         if hasattr(e, 'code'):
                             status_code = e.code()
+                        elif hasattr(e, '_code'):
+                            status_code = e._code
                         
-                        # Don't retry if not a retryable status code
+                        # Only retry on specific status codes
                         if status_code not in RETRYABLE_STATUS_CODES:
                             raise
 
@@ -72,7 +76,9 @@ def retry(
                         time.sleep(backoff)
                         backoff = min(backoff * backoff_multiplier, max_backoff)
 
-            raise ACSError(f"Operation failed after {max_attempts} attempts") from last_exception
+            raise ACSError(
+                f"Operation failed after {max_attempts} attempts: {str(last_exception)}"
+            ) from last_exception
 
         return wrapper
     return decorator
