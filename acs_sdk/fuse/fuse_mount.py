@@ -7,6 +7,8 @@ import sys
 from datetime import datetime
 from ..client.client import ACSClient
 from ..client.types import ListObjectsOptions
+from io import BytesIO
+from threading import Lock
 
 class ACSFuse(Operations):
     """FUSE implementation for Accelerated Cloud Storage."""
@@ -19,6 +21,9 @@ class ACSFuse(Operations):
         """
         self.client = ACSClient()
         self.bucket = bucket_name
+        self.buffers = {}  # Dictionary to store file buffers
+        self.buffer_lock = Lock()  # Lock for thread-safe buffer access
+
         # Verify bucket exists
         try:
             self.client.head_bucket(bucket_name)
@@ -152,51 +157,73 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
     
     def read(self, path, size, offset, fh):
-        """Read file contents."""
+        """Read file contents, checking buffer first."""
         key = self._get_path(path)
         try:
+            with self.buffer_lock:
+                if key in self.buffers:
+                    # Read from buffer if it exists
+                    buffer = self.buffers[key]
+                    buffer.seek(offset)
+                    return buffer.read(size)
+
+            # Fall back to reading from ACS
             data = self.client.get_object(self.bucket, key)
             print(f"Read {len(data)} bytes from {key} at offset {offset}")
             return data[offset:offset + size]
-        except:
+        except Exception as e:
+            print(f"Read error for {path}: {str(e)}")
             raise FuseOSError(errno.EIO)
 
     def write(self, path, data, offset, fh):
-        """Write file contents."""
+        """Write file contents to buffer."""
         key = self._get_path(path)
         try:
-            # Read existing data
-            try:
-                current_data = self.client.get_object(self.bucket, key)
-            except:
-                current_data = b""
+            with self.buffer_lock:
+                if key not in self.buffers:
+                    # Initialize buffer with existing content if file exists
+                    try:
+                        current_data = self.client.get_object(self.bucket, key)
+                    except:
+                        current_data = b""
+                    self.buffers[key] = BytesIO(current_data)
 
-            # Extend if needed
-            if len(current_data) < offset:
-                current_data += b'\x00' * (offset - len(current_data))
+                # Ensure buffer is large enough
+                buffer = self.buffers[key]
+                buffer.seek(0, 2)  # Seek to end
+                if buffer.tell() < offset:
+                    buffer.write(b'\x00' * (offset - buffer.tell()))
 
-            # Combine data
-            new_data = current_data[:offset] + data
-            if offset + len(data) < len(current_data):
-                new_data += current_data[offset + len(data):]
-
-            # Write back
-            self.client.put_object(self.bucket, key, new_data)
-            print(f"Wrote {len(data)} bytes to {key} at offset {offset}")
-            return len(data)
-        except:
+                # Write data at offset
+                buffer.seek(offset)
+                buffer.write(data)
+                print(f"Buffered {len(data)} bytes to {key} at offset {offset}")
+                return len(data)
+        except Exception as e:
+            print(f"Write error for {path}: {str(e)}")
             raise FuseOSError(errno.EIO)
 
     def create(self, path, mode, fi=None):
         """Create a new file."""
         key = self._get_path(path)
-        self.client.put_object(self.bucket, key, b"")
-        print(f"Created file {key}")
-        return 0
+        try:
+            # Create empty object in ACS first
+            self.client.put_object(self.bucket, key, b"")
+            # Initialize buffer
+            with self.buffer_lock:
+                self.buffers[key] = BytesIO()
+            print(f"Created file {key}")
+            return 0
+        except Exception as e:
+            print(f"Create error for {path}: {str(e)}")
+            raise FuseOSError(errno.EIO)
 
     def unlink(self, path):
-        """Delete a file."""
+        """Delete a file and its buffer if it exists."""
         key = self._get_path(path)
+        with self.buffer_lock:
+            if key in self.buffers:
+                del self.buffers[key]
         try:
             self.client.delete_object(self.bucket, key)
         except:
@@ -230,22 +257,51 @@ class ACSFuse(Operations):
     
     def truncate(self, path, length, fh=None):
         """Truncate file to specified length."""
+        key = self._get_path(path)
         try:
-            key = self._get_path(path)
-            try:
-                data = self.client.get_object(self.bucket, key)
-            except:
-                data = b""
-                
-            if length < len(data):
-                data = data[:length]
-            elif length > len(data):
-                data += b'\x00' * (length - len(data))
-                
-            self.client.put_object(self.bucket, key, data)
+            with self.buffer_lock:
+                if key in self.buffers:
+                    # Modify buffer if it exists
+                    buffer = self.buffers[key]
+                    buffer.seek(0)
+                    data = buffer.read()
+                else:
+                    # Read from ACS if no buffer exists
+                    try:
+                        data = self.client.get_object(self.bucket, key)
+                    except:
+                        data = b""
+                    self.buffers[key] = BytesIO()
+
+                # Truncate data
+                if length < len(data):
+                    data = data[:length]
+                elif length > len(data):
+                    data += b'\x00' * (length - len(data))
+
+                # Update buffer
+                buffer = self.buffers[key]
+                buffer.seek(0)
+                buffer.write(data)
+                buffer.truncate()
         except Exception as e:
             print(f"Truncate error for {path}: {str(e)}")
             raise FuseOSError(errno.EIO)
+            # Get buffer content
+            buffer = self.buffers[key]
+            buffer.seek(0)
+            data = buffer.read()
+
+            # Write to ACS
+            self.client.put_object(self.bucket, key, data)
+            print(f"Flushed {len(data)} bytes from buffer to {key}")
+
+            # Clean up
+            del self.buffers[key]
+        except Exception as e:
+            print(f"Release error for {path}: {str(e)}")
+            raise FuseOSError(errno.EIO)
+        return 0
 
 def mount(bucket: str, mountpoint: str, foreground: bool = True):
     """Mount an ACS bucket at the specified mountpoint.

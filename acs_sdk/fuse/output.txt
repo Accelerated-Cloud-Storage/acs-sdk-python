@@ -1,88 +1,20 @@
-
 Benchmark Results:
 ================================================================================
-
-Results for 1KB files:
-----------------------------------------
-
-Write:
-  Average Latency: 126.71ms
-  P95 Latency: 173.70ms
-  Throughput: 0.01 MB/sec
-
-Read:
-  Average Latency: 5.24ms
-  P95 Latency: 6.17ms
-  Throughput: 0.19 MB/sec
-
-Delete:
-  Average Latency: 2.15ms
-  P95 Latency: 4.46ms
-  Throughput: 464.30 ops/sec
-
-Delete:
-  Average Latency: 2.54ms
-  P95 Latency: 4.26ms
-  Throughput: 393.96 ops/sec
-
-Delete:
-  Average Latency: 2.98ms
-  P95 Latency: 4.34ms
-  Throughput: 336.03 ops/sec
 
 Results for 1024KB files:
 ----------------------------------------
 
-Delete:
-  Average Latency: 2.15ms
-  P95 Latency: 4.46ms
-  Throughput: 464.30 ops/sec
-
 Write:
-  Average Latency: 1247.49ms
-  P95 Latency: 1575.05ms
-  Throughput: 0.80 MB/sec
+  Average Latency: 64.82ms
+  P95 Latency: 86.35ms
+  Throughput: 14.87 MB/sec
 
 Read:
-  Average Latency: 59.29ms
-  P95 Latency: 64.78ms
-  Throughput: 16.87 MB/sec
+  Average Latency: 2.90ms
+  P95 Latency: 4.15ms
+  Throughput: 344.68 MB/sec
 
 Delete:
-  Average Latency: 2.54ms
-  P95 Latency: 4.26ms
-  Throughput: 393.96 ops/sec
-
-Delete:
-  Average Latency: 2.98ms
-  P95 Latency: 4.34ms
-  Throughput: 336.03 ops/sec
-
-Results for 10240KB files:
-----------------------------------------
-
-Delete:
-  Average Latency: 2.15ms
-  P95 Latency: 4.46ms
-  Throughput: 464.30 ops/sec
-
-Delete:
-  Average Latency: 2.54ms
-  P95 Latency: 4.26ms
-  Throughput: 393.96 ops/sec
-
-Write:
-  Average Latency: 14737.78ms
-  P95 Latency: 17857.69ms
-  Throughput: 0.68 MB/sec
-
-Read:
-  Average Latency: 2714.02ms
-  P95 Latency: 2843.32ms
-  Throughput: 3.68 MB/sec
-
-Delete:
-  Average Latency: 2.98ms
-  P95 Latency: 4.34ms
-  Throughput: 336.03 ops/sec
-.myenv[ec2-user@ip-10-0-25-177 fuse]$ 
+  Average Latency: 1.61ms
+  P95 Latency: 2.63ms
+  Throughput: 621.55 ops/sec
