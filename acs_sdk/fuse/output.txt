@@ -1,0 +1,220 @@
+.myenv[ec2-user@ip-10-0-25-177 fuse]$  python -m acs_sdk.fuse.fuse_mount test-bucket-1739926113051803583-13  /mnt/s3-mount 
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1740027608.866155   34541 fork_posix.cc:75] Other threads are currently calling into gRPC, skipping fork() handlers
+FUSE library version: 2.9.2
+nullpath_ok: 0
+nopath: 0
+utime_omit_ok: 0
+unique: 2, opcode: INIT (26), nodeid: 0, insize: 56, pid: 0
+INIT: 7.32
+flags=0x03fffffb
+max_readahead=0x00020000
+   INIT: 7.19
+   flags=0x00000011
+   max_readahead=0x00020000
+   max_write=0x00020000
+   max_background=0
+   congestion_threshold=0
+   unique: 2, success, outsize: 40
+unique: 4, opcode: GETATTR (3), nodeid: 1, insize: 56, pid: 34635
+getattr /
+   unique: 4, success, outsize: 120
+unique: 6, opcode: GETATTR (3), nodeid: 1, insize: 56, pid: 34643
+getattr /
+   unique: 6, success, outsize: 120
+unique: 8, opcode: OPENDIR (27), nodeid: 1, insize: 48, pid: 34643
+opendir flags: 0x24800 /
+   opendir[0] flags: 0x24800 /
+   unique: 8, success, outsize: 32
+unique: 10, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 34643
+readdir[0] from 0
+Listing directory 
+Filtered to 6 objects ['newFolder/', 'temp/', 'file3.txt', 'file.txt', 'folder/', 'file2.txt']
+Processing key newFolder/
+Processing key temp/
+Processing key file3.txt
+Processing key file.txt
+Processing key folder/
+Processing key file2.txt
+Found 8 entries {'..', 'folder', 'file3.txt', 'file.txt', 'newFolder', '.', 'temp', 'file2.txt'}
+   unique: 10, success, outsize: 296
+unique: 12, opcode: LOOKUP (1), nodeid: 1, insize: 47, pid: 34643
+LOOKUP /folder
+getattr /folder
+Found directory folder/
+   NODEID: 2
+   unique: 12, success, outsize: 144
+unique: 14, opcode: LOOKUP (1), nodeid: 1, insize: 50, pid: 34643
+LOOKUP /file3.txt
+getattr /file3.txt
+Found object file3.txt
+   NODEID: 3
+   unique: 14, success, outsize: 144
+unique: 16, opcode: GETXATTR (22), nodeid: 3, insize: 68, pid: 34643
+getxattr /file3.txt security.capability 0
+   unique: 16, error: -95 (Operation not supported), outsize: 16
+unique: 18, opcode: GETXATTR (22), nodeid: 3, insize: 68, pid: 34643
+getxattr /file3.txt security.capability 24
+   unique: 18, error: -95 (Operation not supported), outsize: 16
+unique: 20, opcode: LOOKUP (1), nodeid: 1, insize: 49, pid: 34643
+LOOKUP /file.txt
+getattr /file.txt
+Found object file.txt
+   NODEID: 4
+   unique: 20, success, outsize: 144
+unique: 22, opcode: LOOKUP (1), nodeid: 1, insize: 50, pid: 34643
+LOOKUP /newFolder
+getattr /newFolder
+Found directory newFolder/
+   NODEID: 5
+   unique: 22, success, outsize: 144
+unique: 24, opcode: LOOKUP (1), nodeid: 1, insize: 45, pid: 34643
+LOOKUP /temp
+getattr /temp
+Found directory temp/
+   NODEID: 6
+   unique: 24, success, outsize: 144
+unique: 26, opcode: LOOKUP (1), nodeid: 1, insize: 50, pid: 34643
+LOOKUP /file2.txt
+getattr /file2.txt
+Found object file2.txt
+   NODEID: 7
+   unique: 26, success, outsize: 144
+unique: 28, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 34643
+   unique: 28, success, outsize: 16
+unique: 30, opcode: RELEASEDIR (29), nodeid: 1, insize: 64, pid: 0
+releasedir[0] flags: 0x0
+   unique: 30, success, outsize: 16
+unique: 32, opcode: GETATTR (3), nodeid: 1, insize: 56, pid: 8690
+getattr /
+   unique: 32, success, outsize: 120
+unique: 34, opcode: OPENDIR (27), nodeid: 1, insize: 48, pid: 8690
+opendir flags: 0x24800 /
+   opendir[0] flags: 0x24800 /
+   unique: 34, success, outsize: 32
+unique: 36, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 8690
+readdir[0] from 0
+Listing directory 
+Filtered to 6 objects ['newFolder/', 'temp/', 'file3.txt', 'file.txt', 'folder/', 'file2.txt']
+Processing key newFolder/
+Processing key temp/
+Processing key file3.txt
+Processing key file.txt
+Processing key folder/
+Processing key file2.txt
+Found 8 entries {'..', 'folder', 'file3.txt', 'file.txt', 'newFolder', '.', 'temp', 'file2.txt'}
+   unique: 36, success, outsize: 296
+unique: 38, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 8690
+   unique: 38, success, outsize: 16
+unique: 40, opcode: RELEASEDIR (29), nodeid: 1, insize: 64, pid: 0
+releasedir[0] flags: 0x0
+   unique: 40, success, outsize: 16
+unique: 42, opcode: OPENDIR (27), nodeid: 1, insize: 48, pid: 8690
+opendir flags: 0x24800 /
+   opendir[0] flags: 0x24800 /
+   unique: 42, success, outsize: 32
+unique: 44, opcode: GETATTR (3), nodeid: 1, insize: 56, pid: 8690
+getattr /
+   unique: 44, success, outsize: 120
+unique: 46, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 8690
+readdir[0] from 0
+Listing directory 
+Filtered to 6 objects ['newFolder/', 'temp/', 'file3.txt', 'file.txt', 'folder/', 'file2.txt']
+Processing key newFolder/
+Processing key temp/
+Processing key file3.txt
+Processing key file.txt
+Processing key folder/
+Processing key file2.txt
+Found 8 entries {'..', 'folder', 'file3.txt', 'file.txt', 'newFolder', '.', 'temp', 'file2.txt'}
+   unique: 46, success, outsize: 296
+unique: 48, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 8690
+   unique: 48, success, outsize: 16
+unique: 50, opcode: RELEASEDIR (29), nodeid: 1, insize: 64, pid: 0
+releasedir[0] flags: 0x0
+   unique: 50, success, outsize: 16
+unique: 52, opcode: OPENDIR (27), nodeid: 1, insize: 48, pid: 34697
+opendir flags: 0x24800 /
+   opendir[0] flags: 0x24800 /
+   unique: 52, success, outsize: 32
+unique: 54, opcode: GETATTR (3), nodeid: 1, insize: 56, pid: 34697
+getattr /
+   unique: 54, success, outsize: 120
+unique: 56, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 34697
+readdir[0] from 0
+Listing directory 
+Filtered to 6 objects ['newFolder/', 'temp/', 'file3.txt', 'file.txt', 'folder/', 'file2.txt']
+Processing key newFolder/
+Processing key temp/
+Processing key file3.txt
+Processing key file.txt
+Processing key folder/
+Processing key file2.txt
+Found 8 entries {'..', 'folder', 'file3.txt', 'file.txt', 'newFolder', '.', 'temp', 'file2.txt'}
+   unique: 56, success, outsize: 296
+unique: 58, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 34697
+   unique: 58, success, outsize: 16
+unique: 60, opcode: RELEASEDIR (29), nodeid: 1, insize: 64, pid: 0
+releasedir[0] flags: 0x0
+   unique: 60, success, outsize: 16
+unique: 62, opcode: LOOKUP (1), nodeid: 1, insize: 50, pid: 34697
+LOOKUP /file3.txt
+getattr /file3.txt
+Found object file3.txt
+   NODEID: 3
+   unique: 62, success, outsize: 144
+unique: 64, opcode: OPENDIR (27), nodeid: 1, insize: 48, pid: 34700
+opendir flags: 0x24800 /
+   opendir[0] flags: 0x24800 /
+   unique: 64, success, outsize: 32
+unique: 66, opcode: GETATTR (3), nodeid: 1, insize: 56, pid: 34700
+getattr /
+   unique: 66, success, outsize: 120
+unique: 68, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 34700
+readdir[0] from 0
+Listing directory 
+Filtered to 6 objects ['newFolder/', 'temp/', 'file3.txt', 'file.txt', 'folder/', 'file2.txt']
+Processing key newFolder/
+Processing key temp/
+Processing key file3.txt
+Processing key file.txt
+Processing key folder/
+Processing key file2.txt
+Found 8 entries {'..', 'folder', 'file3.txt', 'file.txt', 'newFolder', '.', 'temp', 'file2.txt'}
+   unique: 68, success, outsize: 296
+unique: 70, opcode: READDIR (28), nodeid: 1, insize: 80, pid: 34700
+   unique: 70, success, outsize: 16
+unique: 72, opcode: RELEASEDIR (29), nodeid: 1, insize: 64, pid: 0
+releasedir[0] flags: 0x0
+   unique: 72, success, outsize: 16
+unique: 74, opcode: GETATTR (3), nodeid: 1, insize: 56, pid: 34732
+getattr /
+   unique: 74, success, outsize: 120
+unique: 76, opcode: LOOKUP (1), nodeid: 1, insize: 47, pid: 34732
+LOOKUP /folder
+getattr /folder
+Found directory folder/
+   NODEID: 2
+   unique: 76, success, outsize: 144
+unique: 78, opcode: LOOKUP (1), nodeid: 1, insize: 50, pid: 34732
+LOOKUP /file3.txt
+getattr /file3.txt
+Found object file3.txt
+   NODEID: 3
+   unique: 78, success, outsize: 144
+unique: 80, opcode: LOOKUP (1), nodeid: 2, insize: 50, pid: 34732
+LOOKUP /folder/file3.txt
+getattr /folder/file3.txt
+Found object folder/file3.txt
+   NODEID: 8
+   unique: 80, success, outsize: 144
+unique: 82, opcode: LOOKUP (1), nodeid: 2, insize: 50, pid: 34732
+LOOKUP /folder/file3.txt
+getattr /folder/file3.txt
+Found object folder/file3.txt
+   NODEID: 8
+   unique: 82, success, outsize: 144
+unique: 84, opcode: RENAME (12), nodeid: 1, insize: 68, pid: 34732
+rename /file3.txt /folder/file3.txt
+   unique: 84, error: -30 (Read-only file system), outsize: 16
+unique: 86, opcode: GETATTR (3), nodeid: 1, insize: 56, pid: 2272

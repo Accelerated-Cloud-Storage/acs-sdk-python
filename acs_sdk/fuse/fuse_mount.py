@@ -110,20 +110,16 @@ class ACSFuse(Operations):
                         seen.add(parts[0] + ('/' if len(parts) > 1 else ''))
                         
                 objects = list(seen)  # Convert filtered results back to list
+                print(f"Filtered to {len(objects)} objects", objects)
                 
                 for key in objects:
-                    if key == prefix:  # Skip the directory marker itself
-                        continue
-                    rel_path = key[len(prefix):]
-                    if not rel_path:  # Skip empty paths
-                        continue
-                    
+                    print(f"Processing key {key}")
                     # Remove trailing slash for directory entries
-                    if rel_path.endswith('/'):
-                        rel_path = rel_path[:-1]
-                        
-                    entries.add(rel_path)
-                print(f"Found {len(entries)} entries")
+                    if key.endswith('/'):
+                        key = key[:-1]
+                    entries.add(key)
+
+                print(f"Found {len(entries)} entries", entries)
                 return list(entries)
             except Exception as e:
                 print(f"Error listing objects: {str(e)}")
@@ -135,6 +131,26 @@ class ACSFuse(Operations):
             traceback.print_exc()
             raise FuseOSError(errno.EIO)
 
+    def rename(self, old, new):
+        """Rename a file or directory."""
+        old_key = self._get_path(old)
+        new_key = self._get_path(new)
+        try:
+            # Get the object data for the source
+            data = self.client.get_object(self.bucket, old_key)
+        except Exception as e:
+            print(f"Error reading {old_key}: {str(e)}")
+            raise FuseOSError(errno.ENOENT)
+        try:
+            # Write data to the destination key
+            self.client.put_object(self.bucket, new_key, data)
+            # Delete the original object
+            self.client.delete_object(self.bucket, old_key)
+            print(f"Renamed {old_key} to {new_key}")
+        except Exception as e:
+            print(f"Error renaming {old_key} to {new_key}: {str(e)}")
+            raise FuseOSError(errno.EIO)
+    
     def read(self, path, size, offset, fh):
         """Read file contents."""
         key = self._get_path(path)
