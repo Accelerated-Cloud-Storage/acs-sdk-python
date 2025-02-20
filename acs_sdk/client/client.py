@@ -41,7 +41,7 @@ class ACSClient:
             ('grpc.http2.min_time_between_pings_ms', 10000),
             ('grpc.enable_retries', 1),
             ('grpc.max_connection_idle_ms', 60000),
-            ('grpc.max_connection_age_ms', 300000),
+            ('grpc.max_connection_age_ms', 3600000),
             ('grpc.max_connection_age_grace_ms', 5000),
         ]
         

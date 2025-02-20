@@ -262,7 +262,7 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
         'debug': True,
         'default_permissions': True,
         'direct_io': True,
-        'rw': True, 
+        'rw': True,
     }
     FUSE(ACSFuse(bucket), mountpoint, **options)
 
