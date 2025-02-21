@@ -9,6 +9,8 @@ from acs_sdk.client.client import ACSClient
 from acs_sdk.client.types import ListObjectsOptions
 from io import BytesIO
 from threading import Lock
+import subprocess
+import signal
 
 class ACSFuse(Operations):
     """FUSE implementation for Accelerated Cloud Storage."""
@@ -50,7 +52,6 @@ class ACSFuse(Operations):
 
         try:
             key = self._get_path(path)
-            
             # First try to get object metadata directly
             try:
                 metadata = self.client.head_object(self.bucket, key)
@@ -100,16 +101,16 @@ class ACSFuse(Operations):
                     parts = rel_path.split('/')
                     if parts[0]:
                         seen.add(parts[0] + ('/' if len(parts) > 1 else ''))
-                        
                 objects = list(seen)  # Convert filtered results back to list
                 
+                # Prepare entries
                 for key in objects:
                     # Remove trailing slash for directory entries
                     if key.endswith('/'):
                         key = key[:-1]
                     entries.add(key)
-
                 return list(entries)
+
             except Exception as e:
                 return list(entries)
                 
@@ -120,11 +121,13 @@ class ACSFuse(Operations):
         """Rename a file or directory."""
         old_key = self._get_path(old)
         new_key = self._get_path(new)
+
         try:
             # Get the object data for the source
             data = self.client.get_object(self.bucket, old_key)
         except Exception as e:
             raise FuseOSError(errno.ENOENT)
+
         try:
             # Write data to the destination key
             self.client.put_object(self.bucket, new_key, data)
@@ -137,7 +140,7 @@ class ACSFuse(Operations):
         """Read file contents, checking buffer first."""
         key = self._get_path(path)
         try:
-            # Read from ACS
+            # Read from Object Storage
             data = self.client.get_object(self.bucket, key)
             return data[offset:offset + size]
         except Exception as e:
@@ -175,6 +178,7 @@ class ACSFuse(Operations):
         try:
             # Create empty object in Object Storage first
             self.client.put_object(self.bucket, key, b"")
+
             # Initialize buffer
             with self.buffer_lock:
                 self.buffers[key] = BytesIO()
@@ -251,6 +255,7 @@ class ACSFuse(Operations):
         with self.buffer_lock:
             key = self._get_path(path)
             if key in self.buffers:
+                # Get buffer data and write to ACS
                 buffer = self.buffers[key]
                 buffer.seek(0)
                 data = buffer.read()
@@ -261,12 +266,28 @@ class ACSFuse(Operations):
 
     def release(self, path, fh):
         """Release the file handle and flush the write buffer to ACS storage."""
+        # Called after the last file descriptor is closed
         self._flush_buffer(path)
         with self.buffer_lock:
             key = self._get_path(path)
             if key in self.buffers:
                 del self.buffers[key]
         return 0
+
+def unmount(mountpoint):
+    """Unmount the filesystem using fusermount (Linux)."""
+    # Normalize mountpoint (remove trailing slash)
+    mountpoint = mountpoint.rstrip('/')
+    try:
+        # Check if the mountpoint is mounted
+        cp = subprocess.run(["mountpoint", "-q", mountpoint])
+        if cp.returncode != 0:
+            print(f"{mountpoint} is not mounted, nothing to unmount.")
+            return
+        subprocess.run(["fusermount", "-u", mountpoint], check=True)
+        print(f"Unmounted {mountpoint} gracefully.")
+    except Exception as e:
+        print(f"Error during unmounting: {e}")
 
 def mount(bucket: str, mountpoint: str, foreground: bool = True):
     """Mount an ACS bucket at the specified mountpoint.
@@ -276,7 +297,6 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
         mountpoint (str): Local path where the filesystem should be mounted
         foreground (bool, optional): Run in foreground. Defaults to True.
     """
-    """Mount an ACS bucket at the specified mountpoint."""
     os.environ["GRPC_VERBOSITY"] = "ERROR"
     options = {
         'foreground': foreground,
@@ -288,7 +308,24 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
         'big_writes': True,
         'max_read': 100 * 1024 * 1024,  # 100 MB 
     }
-    FUSE(ACSFuse(bucket), mountpoint, **options)
+
+    # Define a signal handler to catch SIGINT and SIGTERM
+    def signal_handler(sig, frame):
+        print("Signal received, unmounting...")
+        unmount(mountpoint)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    try:
+        FUSE(ACSFuse(bucket), mountpoint, **options)
+    except KeyboardInterrupt:
+        print("Keyboard interrupt received, unmounting...")
+        unmount(mountpoint)
+    except Exception as e:
+        print(f"Error: {e}")
+        unmount(mountpoint)
 
 def main():
     """CLI entry point for mounting ACS buckets."""

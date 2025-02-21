@@ -32,17 +32,17 @@ class ACSClient:
         # Setup secure channel with improved settings
         creds = grpc.ssl_channel_credentials()
         options = [
-            ('grpc.max_send_message_length', 1024 * 1024 * 1024),
-            ('grpc.max_receive_message_length', 1024 * 1024 * 1024),
-            ('grpc.keepalive_time_ms', 10000),  # More aggressive keepalive
-            ('grpc.keepalive_timeout_ms', 5000),
+            ('grpc.max_send_message_length', 1024 * 1024 * 1024), # 1GB
+            ('grpc.max_receive_message_length', 1024 * 1024 * 1024), # 1GB
+            ('grpc.keepalive_time_ms', 10000), # 10 seconds
+            ('grpc.keepalive_timeout_ms', 5000), # 5 seconds
             ('grpc.keepalive_permit_without_calls', True),
-            ('grpc.http2.max_pings_without_data', 0),
-            ('grpc.http2.min_time_between_pings_ms', 10000),
-            ('grpc.enable_retries', 1),
-            ('grpc.max_connection_idle_ms', 60000),
-            ('grpc.max_connection_age_ms', 3600000),
-            ('grpc.max_connection_age_grace_ms', 5000),
+            ('grpc.http2.max_pings_without_data', 0), # unlimited
+            ('grpc.http2.min_time_between_pings_ms', 10000), # 10 seconds
+            ('grpc.enable_retries', 1), # enable retries
+            ('grpc.max_connection_idle_ms', 60000), # 1 minute
+            ('grpc.max_connection_age_ms', 3600000), # 1 hour
+            ('grpc.max_connection_age_grace_ms', 5000), # 5 seconds
         ]
         
         self.channel = grpc.secure_channel(self.SERVER_ADDRESS, creds, options=options)
@@ -327,8 +327,7 @@ class ACSClient:
 
             # Buffer all responses to handle connection issues
             all_keys = []
-            response_stream = self.client.ListObjects(request, timeout=30)
-            
+            response_stream = self.client.ListObjects(request)
             try:
                 for response in response_stream:
                     if response.HasField('object'):
@@ -339,7 +338,7 @@ class ACSClient:
                     self.channel.subscribe(lambda s: None, try_to_connect=True)
                 raise
 
-            # Yield from buffered keys
+            # Yield from buffered keys to enable iteration 
             for key in all_keys:
                 yield key
 

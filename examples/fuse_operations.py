@@ -1,5 +1,5 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
-# Make sure to run the python -m acs_sdk.fuse.fuse_mount <bucket> <mountpoint> command before running the script.
+# Make sure to run the python -m acs_sdk.fuse.fuse_mount <bucket> <mountpoint> command in a different terminal before running the script.
 import sys
 import os
 
