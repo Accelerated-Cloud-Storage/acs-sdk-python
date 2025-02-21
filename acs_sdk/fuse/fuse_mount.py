@@ -1,12 +1,13 @@
+# Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
 #!/usr/bin/env python3
-
 from fuse import FUSE, FuseOSError, Operations
 import errno
 import os
 import sys 
+import time 
 from datetime import datetime
-from ..client.client import ACSClient
-from ..client.types import ListObjectsOptions
+from acs_sdk.client.client import ACSClient
+from acs_sdk.client.types import ListObjectsOptions
 from io import BytesIO
 from threading import Lock
 
@@ -36,6 +37,7 @@ class ACSFuse(Operations):
 
     def getattr(self, path, fh=None):
         """Get file attributes."""
+        start_time = time.perf_counter()
         now = datetime.now().timestamp()
         base_stat = {
             'st_uid': os.getuid(),
@@ -54,7 +56,8 @@ class ACSFuse(Operations):
             # First try to get object metadata directly
             try:
                 metadata = self.client.head_object(self.bucket, key)
-                print(f"Found object {key}")
+                duration = time.perf_counter() - start_time
+                print(f"Found object {key} in {duration:.6f} seconds")
                 return {**base_stat,
                         'st_mode': 0o100644,
                         'st_size': metadata.content_length,
@@ -63,26 +66,20 @@ class ACSFuse(Operations):
             except:
                 # If not found as a file, check if it's a directory
                 dir_key = key if key.endswith('/') else key + '/'
-                # Get objects with prefix and filter for directory-like entries
-                all_objects = list(self.client.list_objects(
-                    self.bucket,
-                    ListObjectsOptions(prefix=dir_key, max_keys=1)
-                ))
-                # Filter to only include objects that start with dir_key
-                objects = [obj for obj in all_objects if obj.startswith(dir_key)]
-                if objects:
-                    print(f"Found directory {dir_key}")
-                    return {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2}
-
-                print(f"Path not found: {path}")
-                raise FuseOSError(errno.ENOENT)
+                # Check for directory by getting metadata
+                metadata = self.client.head_object(self.bucket, dir_key)
+                duration = time.perf_counter() - start_time
+                print(f"Found directory {dir_key} in {duration:.6f} seconds")
+                return {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2}
                 
         except Exception as e:
-            print(f"Error getting attributes for {path}: {str(e)}")
+            duration = time.perf_counter() - start_time
+            print(f"Error getting attributes for {path}: {str(e)} in {duration:.6f} seconds")
             raise FuseOSError(errno.ENOENT)
 
     def readdir(self, path, fh):
         """List directory contents."""
+        start_time = time.perf_counter()
         try:
             prefix = self._get_path(path)
             if prefix and not prefix.endswith('/'):
@@ -124,7 +121,8 @@ class ACSFuse(Operations):
                         key = key[:-1]
                     entries.add(key)
 
-                print(f"Found {len(entries)} entries", entries)
+                duration = time.perf_counter() - start_time
+                print(f"Found {len(entries)} entries in {duration:.6f} seconds", entries)
                 return list(entries)
             except Exception as e:
                 print(f"Error listing objects: {str(e)}")
@@ -177,6 +175,7 @@ class ACSFuse(Operations):
 
     def write(self, path, data, offset, fh):
         """Write file contents to buffer."""
+        start_time = time.perf_counter()
         key = self._get_path(path)
         try:
             with self.buffer_lock:
@@ -197,7 +196,8 @@ class ACSFuse(Operations):
                 # Write data at offset
                 buffer.seek(offset)
                 buffer.write(data)
-                print(f"Buffered {len(data)} bytes to {key} at offset {offset}")
+                duration = time.perf_counter() - start_time
+                print(f"Buffered {len(data)} bytes to {key} at offset {offset} in {duration:.6f} seconds")
                 return len(data)
         except Exception as e:
             print(f"Write error for {path}: {str(e)}")
@@ -205,6 +205,7 @@ class ACSFuse(Operations):
 
     def create(self, path, mode, fi=None):
         """Create a new file."""
+        start_time = time.perf_counter()
         key = self._get_path(path)
         try:
             # Create empty object in ACS first
@@ -212,7 +213,8 @@ class ACSFuse(Operations):
             # Initialize buffer
             with self.buffer_lock:
                 self.buffers[key] = BytesIO()
-            print(f"Created file {key}")
+            duration = time.perf_counter() - start_time
+            print(f"Created file {key} in {duration:.6f} seconds")
             return 0
         except Exception as e:
             print(f"Create error for {path}: {str(e)}")
@@ -287,20 +289,32 @@ class ACSFuse(Operations):
         except Exception as e:
             print(f"Truncate error for {path}: {str(e)}")
             raise FuseOSError(errno.EIO)
-            # Get buffer content
-            buffer = self.buffers[key]
-            buffer.seek(0)
-            data = buffer.read()
+        return 0
 
-            # Write to ACS
-            self.client.put_object(self.bucket, key, data)
-            print(f"Flushed {len(data)} bytes from buffer to {key}")
+    def _flush_buffer(self, path):
+        """Flush the in-memory buffer for a file to ACS storage."""
+        start_time = time.perf_counter()
+        with self.buffer_lock:
+            key = self._get_path(path)
+            if key in self.buffers:
+                buffer = self.buffers[key]
+                buffer.seek(0)
+                data = buffer.read()
+                try:
+                    self.client.put_object(self.bucket, key, data)
+                    duration = time.perf_counter() - start_time
+                    print(f"Flushed buffer for {path} to ACS storage in {duration:.6f} seconds")
+                except Exception as e:
+                    print(f"Error flushing buffer for {path}: {str(e)}")
+                    raise FuseOSError(errno.EIO)
 
-            # Clean up
-            del self.buffers[key]
-        except Exception as e:
-            print(f"Release error for {path}: {str(e)}")
-            raise FuseOSError(errno.EIO)
+    def release(self, path, fh):
+        """Release the file handle and flush the write buffer to ACS storage."""
+        self._flush_buffer(path)
+        with self.buffer_lock:
+            key = self._get_path(path)
+            if key in self.buffers:
+                del self.buffers[key]
         return 0
 
 def mount(bucket: str, mountpoint: str, foreground: bool = True):

@@ -30,7 +30,7 @@ def generate_random_filename() -> str:
 class FUSEBenchmark:
     def __init__(self, mount_path: str):
         self.mount_path = Path(mount_path)
-        self.sizes = [1024, 1024*1024, 10*1024*1024]  # 1KB, 1MB, 10MB
+        self.sizes = [1024*1024]  # 1KB, 1MB, 10MB
         self.batch_size = 50
         self.results: List[TestResult] = []
 
@@ -84,7 +84,7 @@ class FUSEBenchmark:
             throughput=throughput
         )
 
-    def run_delete_test(self, files: List[Path]) -> TestResult:
+    def run_delete_test(self, size: int, files: List[Path]) -> TestResult:
         """Test delete operations."""
         print("Testing deletes...")
         latencies = []
@@ -100,7 +100,7 @@ class FUSEBenchmark:
 
         return TestResult(
             operation='delete',
-            file_size=0,  # Not relevant for deletes
+            file_size=size,  # now record the file size for delete as well
             batch_size=self.batch_size,
             total_time=total_time,
             latencies=latencies,
@@ -111,13 +111,12 @@ class FUSEBenchmark:
         """Run all benchmarks."""
         for size in self.sizes:
             # Create test files (generate filenames once)
-            files = [self.mount_path / generate_random_filename() 
-                     for _ in range(self.batch_size)]
+            files = [self.mount_path / generate_random_filename() for _ in range(self.batch_size)]
             
             # Run tests using the same file list for writes, reads, deletes
             write_result = self.run_write_test(size, files)
             read_result = self.run_read_test(size, files)
-            delete_result = self.run_delete_test(files)
+            delete_result = self.run_delete_test(size, files)
 
             # Store results
             self.results.extend([write_result, read_result, delete_result])
@@ -131,7 +130,7 @@ class FUSEBenchmark:
             print(f"\nResults for {size/1024:.0f}KB files:")
             print("-" * 40)
             
-            size_results = [r for r in self.results if r.file_size == size or r.operation == 'delete']
+            size_results = [r for r in self.results if r.file_size == size]
             for result in size_results:
                 avg_latency = statistics.mean(result.latencies) * 1000  # Convert to ms
                 p95_latency = statistics.quantiles(result.latencies, n=20)[-1] * 1000
