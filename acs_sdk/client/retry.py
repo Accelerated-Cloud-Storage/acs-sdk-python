@@ -9,7 +9,6 @@ RETRYABLE_STATUS_CODES = {
     grpc.StatusCode.UNAVAILABLE,
     grpc.StatusCode.RESOURCE_EXHAUSTED,
     grpc.StatusCode.DEADLINE_EXCEEDED,
-    grpc.StatusCode.INTERNAL
 }
 
 def retry(

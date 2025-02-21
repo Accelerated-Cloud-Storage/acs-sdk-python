@@ -21,7 +21,7 @@ class ACSFuse(Operations):
             bucket_name (str): Name of the bucket to mount
         """
         self.client = ACSClient()
-        self.bucket = bucket_name
+        self.bucket = bucket_name # Each mount is tied to one bucket
         self.buffers = {}  # Dictionary to store file buffers
         self.buffer_lock = Lock()  # Lock for thread-safe buffer access
 
@@ -158,14 +158,7 @@ class ACSFuse(Operations):
         """Read file contents, checking buffer first."""
         key = self._get_path(path)
         try:
-            with self.buffer_lock:
-                if key in self.buffers:
-                    # Read from buffer if it exists
-                    buffer = self.buffers[key]
-                    buffer.seek(offset)
-                    return buffer.read(size)
-
-            # Fall back to reading from ACS
+            # Read from ACS
             data = self.client.get_object(self.bucket, key)
             print(f"Read {len(data)} bytes from {key} at offset {offset}")
             return data[offset:offset + size]
@@ -221,11 +214,8 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
 
     def unlink(self, path):
-        """Delete a file and its buffer if it exists."""
+        """Delete a file if it exists."""
         key = self._get_path(path)
-        with self.buffer_lock:
-            if key in self.buffers:
-                del self.buffers[key]
         try:
             self.client.delete_object(self.bucket, key)
         except:
