@@ -39,6 +39,7 @@
     * [head\_bucket](#client.ACSClient.head_bucket)
     * [rotate\_key](#client.ACSClient.rotate_key)
     * [share\_bucket](#client.ACSClient.share_bucket)
+* [fuse](#FUSE)
 
 <a id="types"></a>
 
@@ -531,3 +532,9 @@ Share a bucket with the ACS service.
 
 - `BucketError` - If sharing fails.
 
+# FUSE
+The FUSE mount transforms the Accelerated Object Storage offering into a POSIX-like operating system. You can setup this mount by creating a directory for your mount and picking a bucket you would like to mount. Then simply run this command in your terminal.
+
+```
+python -m acs_sdk.fuse.fuse_mount <bucket> <mountpoint>
+```
