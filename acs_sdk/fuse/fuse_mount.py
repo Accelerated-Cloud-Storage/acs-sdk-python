@@ -1,5 +1,4 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
-#!/usr/bin/env python3
 from fuse import FUSE, FuseOSError, Operations
 import errno
 import os
@@ -37,7 +36,6 @@ class ACSFuse(Operations):
 
     def getattr(self, path, fh=None):
         """Get file attributes."""
-        start_time = time.perf_counter()
         now = datetime.now().timestamp()
         base_stat = {
             'st_uid': os.getuid(),
@@ -56,8 +54,6 @@ class ACSFuse(Operations):
             # First try to get object metadata directly
             try:
                 metadata = self.client.head_object(self.bucket, key)
-                duration = time.perf_counter() - start_time
-                print(f"Found object {key} in {duration:.6f} seconds")
                 return {**base_stat,
                         'st_mode': 0o100644,
                         'st_size': metadata.content_length,
@@ -68,25 +64,19 @@ class ACSFuse(Operations):
                 dir_key = key if key.endswith('/') else key + '/'
                 # Check for directory by getting metadata
                 metadata = self.client.head_object(self.bucket, dir_key)
-                duration = time.perf_counter() - start_time
-                print(f"Found directory {dir_key} in {duration:.6f} seconds")
                 return {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2}
                 
         except Exception as e:
-            duration = time.perf_counter() - start_time
-            print(f"Error getting attributes for {path}: {str(e)} in {duration:.6f} seconds")
             raise FuseOSError(errno.ENOENT)
 
     def readdir(self, path, fh):
         """List directory contents."""
-        start_time = time.perf_counter()
         try:
             prefix = self._get_path(path)
             if prefix and not prefix.endswith('/'):
                 prefix += '/'
 
             entries = {'.', '..'}
-            print(f"Listing directory {prefix}")
             
             try:
                 # Get all objects with prefix
@@ -112,26 +102,18 @@ class ACSFuse(Operations):
                         seen.add(parts[0] + ('/' if len(parts) > 1 else ''))
                         
                 objects = list(seen)  # Convert filtered results back to list
-                print(f"Filtered to {len(objects)} objects", objects)
                 
                 for key in objects:
-                    print(f"Processing key {key}")
                     # Remove trailing slash for directory entries
                     if key.endswith('/'):
                         key = key[:-1]
                     entries.add(key)
 
-                duration = time.perf_counter() - start_time
-                print(f"Found {len(entries)} entries in {duration:.6f} seconds", entries)
                 return list(entries)
             except Exception as e:
-                print(f"Error listing objects: {str(e)}")
                 return list(entries)
                 
         except Exception as e:
-            print(f"Fatal error in readdir: {str(e)}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
             raise FuseOSError(errno.EIO)
 
     def rename(self, old, new):
@@ -142,16 +124,13 @@ class ACSFuse(Operations):
             # Get the object data for the source
             data = self.client.get_object(self.bucket, old_key)
         except Exception as e:
-            print(f"Error reading {old_key}: {str(e)}")
             raise FuseOSError(errno.ENOENT)
         try:
             # Write data to the destination key
             self.client.put_object(self.bucket, new_key, data)
             # Delete the original object
             self.client.delete_object(self.bucket, old_key)
-            print(f"Renamed {old_key} to {new_key}")
         except Exception as e:
-            print(f"Error renaming {old_key} to {new_key}: {str(e)}")
             raise FuseOSError(errno.EIO)
     
     def read(self, path, size, offset, fh):
@@ -160,15 +139,12 @@ class ACSFuse(Operations):
         try:
             # Read from ACS
             data = self.client.get_object(self.bucket, key)
-            print(f"Read {len(data)} bytes from {key} at offset {offset}")
             return data[offset:offset + size]
         except Exception as e:
-            print(f"Read error for {path}: {str(e)}")
             raise FuseOSError(errno.EIO)
 
     def write(self, path, data, offset, fh):
         """Write file contents to buffer."""
-        start_time = time.perf_counter()
         key = self._get_path(path)
         try:
             with self.buffer_lock:
@@ -189,28 +165,21 @@ class ACSFuse(Operations):
                 # Write data at offset
                 buffer.seek(offset)
                 buffer.write(data)
-                duration = time.perf_counter() - start_time
-                print(f"Buffered {len(data)} bytes to {key} at offset {offset} in {duration:.6f} seconds")
                 return len(data)
         except Exception as e:
-            print(f"Write error for {path}: {str(e)}")
             raise FuseOSError(errno.EIO)
 
     def create(self, path, mode, fi=None):
         """Create a new file."""
-        start_time = time.perf_counter()
         key = self._get_path(path)
         try:
-            # Create empty object in ACS first
+            # Create empty object in Object Storage first
             self.client.put_object(self.bucket, key, b"")
             # Initialize buffer
             with self.buffer_lock:
                 self.buffers[key] = BytesIO()
-            duration = time.perf_counter() - start_time
-            print(f"Created file {key} in {duration:.6f} seconds")
             return 0
         except Exception as e:
-            print(f"Create error for {path}: {str(e)}")
             raise FuseOSError(errno.EIO)
 
     def unlink(self, path):
@@ -220,7 +189,6 @@ class ACSFuse(Operations):
             self.client.delete_object(self.bucket, key)
         except:
             raise FuseOSError(errno.EIO)
-        print(f"Deleted file {key}")
 
     def mkdir(self, path, mode):
         """Create a directory."""
@@ -228,7 +196,6 @@ class ACSFuse(Operations):
         if not key.endswith('/'):
             key += '/'
         self.client.put_object(self.bucket, key, b"")
-        print(f"Created directory {key}")
 
     def rmdir(self, path):
         """Remove a directory."""
@@ -245,7 +212,6 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.ENOTEMPTY)
             
         self.client.delete_object(self.bucket, key)
-        print(f"Deleted directory {key}")
     
     def truncate(self, path, length, fh=None):
         """Truncate file to specified length."""
@@ -277,13 +243,11 @@ class ACSFuse(Operations):
                 buffer.write(data)
                 buffer.truncate()
         except Exception as e:
-            print(f"Truncate error for {path}: {str(e)}")
             raise FuseOSError(errno.EIO)
         return 0
 
     def _flush_buffer(self, path):
         """Flush the in-memory buffer for a file to ACS storage."""
-        start_time = time.perf_counter()
         with self.buffer_lock:
             key = self._get_path(path)
             if key in self.buffers:
@@ -292,10 +256,7 @@ class ACSFuse(Operations):
                 data = buffer.read()
                 try:
                     self.client.put_object(self.bucket, key, data)
-                    duration = time.perf_counter() - start_time
-                    print(f"Flushed buffer for {path} to ACS storage in {duration:.6f} seconds")
                 except Exception as e:
-                    print(f"Error flushing buffer for {path}: {str(e)}")
                     raise FuseOSError(errno.EIO)
 
     def release(self, path, fh):
@@ -316,10 +277,11 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
         foreground (bool, optional): Run in foreground. Defaults to True.
     """
     """Mount an ACS bucket at the specified mountpoint."""
+    os.environ["GRPC_VERBOSITY"] = "ERROR"
     options = {
         'foreground': foreground,
         'nonempty': True,
-        'debug': True,
+        'debug': False,
         'default_permissions': True,
         'direct_io': True,
         'rw': True,
@@ -330,7 +292,6 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
 
 def main():
     """CLI entry point for mounting ACS buckets."""
-    import sys
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <bucket> <mountpoint>")
         sys.exit(1)
