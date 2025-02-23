@@ -1,4 +1,5 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
+"""Module implementing the ACS client for Accelerated Cloud Storage using gRPC."""
 import os
 import yaml
 import grpc

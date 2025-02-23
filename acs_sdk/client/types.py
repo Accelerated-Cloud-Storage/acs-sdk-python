@@ -1,4 +1,5 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
+"""Module containing type definitions for ACS client operations."""
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional

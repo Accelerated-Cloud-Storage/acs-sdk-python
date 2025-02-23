@@ -1,4 +1,5 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
+"""Module providing a retry decorator with exponential backoff for ACS client operations."""
 import time
 from functools import wraps
 from typing import Type, Callable, Any, Union, Tuple

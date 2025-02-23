@@ -1,4 +1,5 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
+"""Module defining exceptions for the ACS client."""
 class ACSError(Exception):
     """Base exception for ACS client errors.
 
