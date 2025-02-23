@@ -1,4 +1,5 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
+"""Module implementing the ACS client for Accelerated Cloud Storage using gRPC."""
 import os
 import yaml
 import grpc
@@ -29,8 +30,23 @@ class ACSClient:
         Sets up a secure gRPC channel, loads credentials, authenticates,
         and checks for key rotation.
         """
-        # Setup secure channel with improved settings
-        creds = grpc.ssl_channel_credentials()
+        # Load the CA certificate from the correct location
+        pkg_root = os.path.dirname(os.path.dirname(__file__))  # Go up one level from client dir
+        ca_cert_path = os.path.join(pkg_root, 'internal', 'ca-chain.pem')
+        try:
+            with open(ca_cert_path, 'rb') as f:
+                ca_cert = f.read()
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"CA certificate not found at {ca_cert_path}. "
+                "Please ensure the certificate is properly installed with the package."
+            )
+
+        # Setup secure channel with improved settings and TLS
+        credentials = grpc.ssl_channel_credentials(
+            root_certificates=ca_cert
+        )
+
         options = [
             ('grpc.max_send_message_length', 1024 * 1024 * 1024), # 1GB
             ('grpc.max_receive_message_length', 1024 * 1024 * 1024), # 1GB
@@ -45,7 +61,8 @@ class ACSClient:
             ('grpc.max_connection_age_grace_ms', 5000), # 5 seconds
         ]
         
-        self.channel = grpc.secure_channel(self.SERVER_ADDRESS, creds, options=options)
+        self.channel = grpc.secure_channel(self.SERVER_ADDRESS,credentials,options=options)
+        
         self._setup_channel_connectivity()
         self.client = pb_grpc.ObjectStorageCacheStub(self.channel)
         

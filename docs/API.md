@@ -1,5 +1,11 @@
 # Table of Contents
 
+* [exceptions](#exceptions)
+  * [ACSError](#exceptions.ACSError)
+  * [AuthenticationError](#exceptions.AuthenticationError)
+  * [BucketError](#exceptions.BucketError)
+  * [ObjectError](#exceptions.ObjectError)
+  * [ConfigurationError](#exceptions.ConfigurationError)
 * [types](#types)
   * [HeadBucketOutput](#types.HeadBucketOutput)
     * [region](#types.HeadBucketOutput.region)
@@ -17,12 +23,6 @@
     * [prefix](#types.ListObjectsOptions.prefix)
     * [start\_after](#types.ListObjectsOptions.start_after)
     * [max\_keys](#types.ListObjectsOptions.max_keys)
-* [exceptions](#exceptions)
-  * [ACSError](#exceptions.ACSError)
-  * [AuthenticationError](#exceptions.AuthenticationError)
-  * [BucketError](#exceptions.BucketError)
-  * [ObjectError](#exceptions.ObjectError)
-  * [ConfigurationError](#exceptions.ConfigurationError)
 * [client](#client)
   * [ACSClient](#client.ACSClient)
     * [close](#client.ACSClient.close)
@@ -40,10 +40,90 @@
     * [rotate\_key](#client.ACSClient.rotate_key)
     * [share\_bucket](#client.ACSClient.share_bucket)
 * [fuse](#FUSE)
+<a id="exceptions"></a>
+
+# Module exceptions
+
+Module defining exceptions for the ACS client.
+
+<a id="exceptions.ACSError"></a>
+
+## ACSError Objects
+
+```python
+class ACSError(Exception)
+```
+
+Base exception for ACS client errors.
+
+**Arguments**:
+
+- `message` _str_ - Error message.
+- `code` _str, optional_ - Error code. Defaults to "ERR_UNKNOWN".
+
+<a id="exceptions.AuthenticationError"></a>
+
+## AuthenticationError Objects
+
+```python
+class AuthenticationError(ACSError)
+```
+
+Exception raised when authentication fails.
+
+**Arguments**:
+
+- `message` _str_ - Error message.
+
+<a id="exceptions.BucketError"></a>
+
+## BucketError Objects
+
+```python
+class BucketError(ACSError)
+```
+
+Exception raised for bucket operation failures.
+
+**Arguments**:
+
+- `message` _str_ - Error message.
+- `operation` _str, optional_ - The bucket operation that failed.
+
+<a id="exceptions.ObjectError"></a>
+
+## ObjectError Objects
+
+```python
+class ObjectError(ACSError)
+```
+
+Exception raised for object operation failures.
+
+**Arguments**:
+
+- `message` _str_ - Error message.
+- `operation` _str, optional_ - The object operation that failed.
+
+<a id="exceptions.ConfigurationError"></a>
+
+## ConfigurationError Objects
+
+```python
+class ConfigurationError(ACSError)
+```
+
+Exception raised for configuration or credential errors.
+
+**Arguments**:
+
+- `message` _str_ - Error message.
 
 <a id="types"></a>
 
 # Module types
+
+Module containing type definitions for ACS client operations.
 
 <a id="types.HeadBucketOutput"></a>
 
@@ -152,88 +232,19 @@ Options for listing objects in a bucket.
 
 ## ListObjectsOptions.max\_keys
 
-<a id="exceptions"></a>
-
-# Module exceptions
-
-<a id="exceptions.ACSError"></a>
-
-## ACSError Objects
-
-```python
-class ACSError(Exception)
-```
-
-Base exception for ACS client errors.
-
-**Arguments**:
-
-- `message` _str_ - Error message.
-- `code` _str, optional_ - Error code. Defaults to "ERR_UNKNOWN".
-
-<a id="exceptions.AuthenticationError"></a>
-
-## AuthenticationError Objects
-
-```python
-class AuthenticationError(ACSError)
-```
-
-Exception raised when authentication fails.
-
-**Arguments**:
-
-- `message` _str_ - Error message.
-
-<a id="exceptions.BucketError"></a>
-
-## BucketError Objects
-
-```python
-class BucketError(ACSError)
-```
-
-Exception raised for bucket operation failures.
-
-**Arguments**:
-
-- `message` _str_ - Error message.
-- `operation` _str, optional_ - The bucket operation that failed.
-
-<a id="exceptions.ObjectError"></a>
-
-## ObjectError Objects
-
-```python
-class ObjectError(ACSError)
-```
-
-Exception raised for object operation failures.
-
-**Arguments**:
-
-- `message` _str_ - Error message.
-- `operation` _str, optional_ - The object operation that failed.
-
-<a id="exceptions.ConfigurationError"></a>
-
-## ConfigurationError Objects
-
-```python
-class ConfigurationError(ACSError)
-```
-
-Exception raised for configuration or credential errors.
-
-**Arguments**:
-
-- `message` _str_ - Error message.
-
 <a id="client"></a>
 
 # Module client
 
+Module implementing the ACS client for Accelerated Cloud Storage using gRPC.
+
 <a id="client.*"></a>
+
+## \*
+
+<a id="client.*"></a>
+
+## \*
 
 <a id="client.ACSClient"></a>
 
@@ -244,6 +255,22 @@ class ACSClient()
 ```
 
 ACSClient is a client for the Accelerated Cloud Storage (ACS) service. It provides methods to interact with the ACS service, including creating, deleting, and listing buckets and objects, as well as uploading and downloading data.
+
+<a id="client.ACSClient.SERVER_ADDRESS"></a>
+
+## ACSClient.SERVER\_ADDRESS
+
+<a id="client.ACSClient.CHUNK_SIZE"></a>
+
+## ACSClient.CHUNK\_SIZE
+
+64KB chunks for streaming
+
+<a id="client.ACSClient.COMPRESSION_THRESHOLD"></a>
+
+## ACSClient.COMPRESSION\_THRESHOLD
+
+100MB threshold for compression
 
 <a id="client.ACSClient.close"></a>
 

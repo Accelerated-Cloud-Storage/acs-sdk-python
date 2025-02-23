@@ -59,7 +59,7 @@ We have a discussion forum where you can read about announcements, product ideas
 
 ### Contact us 
 
-Email us at sales@acceleratedcloudstorage.com if there is a pressing issue for you. 
+Email us at sales@acceleratedcloudstorage.com if you have any further questions or concerns. 
 
 [Issues]: https://github.com/AcceleratedCloudStorage/acs-sdk-python/issues
 [Discussion]: https://github.com/AcceleratedCloudStorage/acs-sdk-python/discussions
