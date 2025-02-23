@@ -39,11 +39,16 @@ dev = [
     "grpc-stubs>=1.53.0",
 ]
 
+[tool.setuptools]
+packages = [
+    "acs_sdk",
+    "acs_sdk.client",
+    "acs_sdk.internal",
+    "acs_sdk.internal.generated"
+]
+
 [tool.setuptools.package-data]
 "acs_sdk" = ["internal/ca-chain.pem"]
-
-[tool.setuptools]
-packages = ["acs_sdk"]
 
 [tool.pytest.ini_options]
 markers = [
