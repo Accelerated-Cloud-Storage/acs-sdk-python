@@ -39,6 +39,12 @@ dev = [
     "grpc-stubs>=1.53.0",
 ]
 
+[tool.setuptools.package-data]
+"acs_sdk" = ["internal/ca-chain.pem"]
+
+[tool.setuptools]
+packages = ["acs_sdk"]
+
 [tool.pytest.ini_options]
 markers = [
     "slow: marks tests as slow",

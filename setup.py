@@ -4,6 +4,9 @@ setup(
     name="acs-sdk",
     version="0.2.0",
     packages=find_packages(),
+    package_data={
+        'acs_sdk': ['internal/ca-chain.pem'],
+    },
     install_requires=[
         "grpcio>=1.70.0",
         "grpcio-tools>=1.70.0",
