@@ -33,7 +33,6 @@ class ACSClient:
         # Load the CA certificate from the correct location
         pkg_root = os.path.dirname(os.path.dirname(__file__))  # Go up one level from client dir
         ca_cert_path = os.path.join(pkg_root, 'internal', 'ca-chain.pem')
-        
         try:
             with open(ca_cert_path, 'rb') as f:
                 ca_cert = f.read()
@@ -62,11 +61,7 @@ class ACSClient:
             ('grpc.max_connection_age_grace_ms', 5000), # 5 seconds
         ]
         
-        self.channel = grpc.secure_channel(
-            self.SERVER_ADDRESS,
-            credentials,
-            options=options
-        )
+        self.channel = grpc.secure_channel(self.SERVER_ADDRESS,credentials,options=options)
         
         self._setup_channel_connectivity()
         self.client = pb_grpc.ObjectStorageCacheStub(self.channel)
