@@ -6,6 +6,7 @@ import sys
 import time 
 from datetime import datetime
 from acs_sdk.client.client import ACSClient
+from acs_sdk.client.client import Session
 from acs_sdk.client.types import ListObjectsOptions
 from io import BytesIO
 from threading import Lock
@@ -21,7 +22,10 @@ class ACSFuse(Operations):
         Args:
             bucket_name (str): Name of the bucket to mount
         """
-        self.client = ACSClient()
+        # Get bucket region and create session with it
+        temp_client = ACSClient(Session())
+        bucket_info = temp_client.head_bucket(bucket_name)
+        self.client = ACSClient(Session(region=bucket_info.region)) # Create client with bucket region
         self.bucket = bucket_name # Each mount is tied to one bucket
         self.buffers = {}  # Dictionary to store file buffers
         self.buffer_lock = Lock()  # Lock for thread-safe buffer access
@@ -140,9 +144,21 @@ class ACSFuse(Operations):
         """Read file contents, checking buffer first."""
         key = self._get_path(path)
         try:
-            # Read from Object Storage
-            data = self.client.get_object(self.bucket, key)
-            return data[offset:offset + size]
+            # First, get the file size using head_object
+            head_response = self.client.head_object(self.bucket, key)
+            file_size = head_response.content_length
+            
+            # If offset is beyond the end of the file, return empty bytes
+            if offset >= file_size:
+                return b""
+            
+            # Adjust the size if it would read beyond the end of the file
+            if offset + size > file_size:
+                size = file_size - offset
+            
+            # Read from Object Storage with adjusted range
+            data = self.client.get_object(self.bucket, key, byte_range=f"bytes={offset}-{offset + size - 1}")
+            return data
         except Exception as e:
             raise FuseOSError(errno.EIO)
 
@@ -301,7 +317,7 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
     options = {
         'foreground': foreground,
         'nonempty': True,
-        'debug': False,
+        'debug': True,
         'default_permissions': True,
         'direct_io': True,
         'rw': True,
