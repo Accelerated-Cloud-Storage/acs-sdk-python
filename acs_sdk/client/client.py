@@ -244,9 +244,34 @@ class ACSClient:
             bytes: The downloaded object data.
 
         Raises:
-            ObjectError: If retrieval fails.
+            ObjectError: If retrieval fails or range format is invalid.
         """
         try:
+            # Validate range format if provided
+            if byte_range:
+                if not byte_range.startswith("bytes="):
+                    raise ObjectError("Invalid range format: must start with 'bytes='")
+                
+                try:
+                    range_parts = byte_range[6:].split("-")
+                    if len(range_parts) != 2:
+                        raise ValueError("Invalid range format")
+                    
+                    # Handle empty parts
+                    if not range_parts[0] and not range_parts[1]:
+                        raise ValueError("Empty range")
+                        
+                    # Parse start and end
+                    start = int(range_parts[0]) if range_parts[0] else 0
+                    end = int(range_parts[1]) if range_parts[1] else None
+                    
+                    # Validate range values
+                    if start < 0 or (end is not None and end < start):
+                        raise ValueError("Invalid range values")
+                        
+                except ValueError as ve:
+                    raise ObjectError(f"Invalid range format: {str(ve)}")
+
             request = pb.GetObjectRequest(bucket=bucket, key=key)
             if byte_range:
                 request.range = byte_range
@@ -336,15 +361,16 @@ class ACSClient:
             HeadObjectOutput: The metadata of the object.
 
         Raises:
-            ObjectError: If metadata retrieval fails.
+            BucketError: If the bucket does not exist or is not accessible.
+            ObjectError: If the object metadata retrieval fails.
         """
         try:
             request = pb.HeadObjectRequest(bucket=bucket, key=key)
             response = self.client.HeadObject(request)
-            
+
             if not response or not response.metadata:
                 raise ObjectError("No metadata received", operation="HEAD")
-            
+
             return HeadObjectOutput(
                 content_type=getattr(response.metadata, 'content_type', ''),
                 content_encoding=getattr(response.metadata, 'content_encoding', None),
@@ -357,9 +383,10 @@ class ACSClient:
                 version_id=getattr(response.metadata, 'version_id', None)
             )
         except grpc.RpcError as e:
-            raise ObjectError(f"Failed to get object metadata: {e.details()}", operation="HEAD") from e
-        except Exception as e:
-            raise ObjectError(f"Unexpected error in head_object: {str(e)}", operation="HEAD") from e
+            error_msg = e.details() if hasattr(e, 'details') else str(e)
+            if "bucket" in error_msg.lower():
+                raise BucketError(error_msg) from e
+            raise ObjectError(f"Failed to get object metadata: {error_msg}", operation="HEAD") from e
     
     @retry()
     def list_objects(self, bucket: str, options: Optional[ListObjectsOptions] = None) -> Iterator[str]:
