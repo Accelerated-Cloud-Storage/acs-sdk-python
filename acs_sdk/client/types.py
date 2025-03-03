@@ -2,7 +2,16 @@
 """Module containing type definitions for ACS client operations."""
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Iterator
+
+@dataclass
+class Session:
+    """Configuration for an ACS client session.
+    
+    Attributes:
+        region (str): The AWS region to use for this session.
+    """
+    region: str = "us-east-1"
 
 @dataclass
 class HeadBucketOutput:

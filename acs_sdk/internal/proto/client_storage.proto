@@ -4,7 +4,7 @@ package proto;
 
 import "google/protobuf/timestamp.proto";
 
-option py_generic_services = true;
+option go_package = "github.com/AcceleratedCloudStorage/acs-sdk-go/generated";
 
 service ObjectStorageCache {
   // Bucket operations
@@ -31,7 +31,6 @@ service ObjectStorageCache {
 // Request/Response messages for bucket operations
 message CreateBucketRequest {
   string bucket = 1;
-  string region = 2;
 }
 
 message CreateBucketResponse {
@@ -80,6 +79,7 @@ message PutObjectResponse {
 message GetObjectRequest {
   string bucket = 1;
   string key = 2;
+  optional string range = 3;  // Range in format "bytes=start-end" (e.g., "bytes=0-9" for first 10 bytes)
 }
 
 message GetObjectResponse {
@@ -145,6 +145,7 @@ message ListObjectsResponse {
 message AuthRequest {
     string access_key_id = 1;
     string secret_access_key = 2;
+    optional string region = 3;  // Optional region for the session
 }
 
 message AuthResponse {
@@ -169,7 +170,9 @@ message ShareBucketResponse {
 }
 
 // Helper message types
-message GetObjectMetadata {}
+message GetObjectMetadata {
+  bool is_compressed = 1;
+}
 
 message ListObjectsMetadata {
   string bucket = 1;

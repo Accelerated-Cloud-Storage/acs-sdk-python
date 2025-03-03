@@ -7,6 +7,8 @@
   * [ObjectError](#exceptions.ObjectError)
   * [ConfigurationError](#exceptions.ConfigurationError)
 * [types](#types)
+  * [Session](#types.Session)
+    * [region](#types.Session.region)
   * [HeadBucketOutput](#types.HeadBucketOutput)
     * [region](#types.HeadBucketOutput.region)
   * [HeadObjectOutput](#types.HeadObjectOutput)
@@ -124,6 +126,21 @@ Exception raised for configuration or credential errors.
 # Module types
 
 Module containing type definitions for ACS client operations.
+
+<a id="types.Session"></a>
+
+## Session Objects
+
+```python
+@dataclass
+class Session()
+```
+
+Configuration for an ACS client session.
+
+**Attributes**:
+
+- `region` _str_ - The AWS region to use for this session. Defaults to "us-east-1".
 
 <a id="types.HeadBucketOutput"></a>
 
@@ -251,18 +268,22 @@ Module implementing the ACS client for Accelerated Cloud Storage using gRPC.
 ## ACSClient Objects
 
 ```python
-class ACSClient()
+class ACSClient(session: Optional[Session] = None)
 ```
 
 ACSClient is a client for the Accelerated Cloud Storage (ACS) service. It provides methods to interact with the ACS service, including creating, deleting, and listing buckets and objects, as well as uploading and downloading data.
+
+**Arguments**:
+
+- `session` _Optional[Session], optional_ - Configuration for the client session. Defaults to None.
 
 <a id="client.ACSClient.SERVER_ADDRESS"></a>
 
 ## ACSClient.SERVER\_ADDRESS
 
-<a id="client.ACSClient.CHUNK_SIZE"></a>
+<a id="client.ACSClient.BASE_CHUNK_SIZE"></a>
 
-## ACSClient.CHUNK\_SIZE
+## ACSClient.BASE\_CHUNK\_SIZE
 
 64KB chunks for streaming
 
@@ -287,16 +308,14 @@ Close the client.
 ### ACSClient.create\_bucket
 
 ```python
-@retry()
-def create_bucket(bucket: str, region: str) -> None
+def create_bucket(bucket: str) -> None
 ```
 
-Create a new bucket in the specified region.
+Create a new bucket.
 
 **Arguments**:
 
 - `bucket` _str_ - The bucket name.
-- `region` _str_ - The region in which to create the bucket.
   
 
 **Raises**:
@@ -355,8 +374,7 @@ Upload data to a bucket with optional compression.
 ### ACSClient.get\_object
 
 ```python
-@retry()
-def get_object(bucket: str, key: str) -> bytes
+def get_object(bucket: str, key: str, byte_range: Optional[str] = None) -> bytes
 ```
 
 Download an object from a bucket.
@@ -365,6 +383,7 @@ Download an object from a bucket.
 
 - `bucket` _str_ - The bucket name.
 - `key` _str_ - The object key.
+- `byte_range` _Optional[str], optional_ - Byte range to download (e.g. "0-1023"). Defaults to None.
   
 
 **Returns**:
@@ -437,131 +456,4 @@ Retrieve metadata for an object without downloading it.
 
 **Returns**:
 
-- `HeadObjectOutput` - The metadata of the object.
-  
-
-**Raises**:
-
-- `ObjectError` - If metadata retrieval fails.
-
-<a id="client.ACSClient.list_objects"></a>
-
-### ACSClient.list\_objects
-
-```python
-@retry()
-def list_objects(
-        bucket: str,
-        options: Optional[ListObjectsOptions] = None) -> Iterator[str]
-```
-
-List objects in a bucket with optional filtering.
-
-**Arguments**:
-
-- `bucket` _str_ - The bucket name.
-- `options` _Optional[ListObjectsOptions], optional_ - Filtering options.
-  
-
-**Yields**:
-
-- `Iterator[str]` - Object keys.
-  
-
-**Raises**:
-
-- `BucketError` - If listing fails.
-
-<a id="client.ACSClient.copy_object"></a>
-
-### ACSClient.copy\_object
-
-```python
-@retry()
-def copy_object(bucket: str, copy_source: str, key: str) -> None
-```
-
-Copy an object within or between buckets.
-
-**Arguments**:
-
-- `bucket` _str_ - The destination bucket name.
-- `copy_source` _str_ - The source object identifier.
-- `key` _str_ - The destination object key.
-  
-
-**Raises**:
-
-- `ObjectError` - If the copy operation fails.
-
-<a id="client.ACSClient.head_bucket"></a>
-
-### ACSClient.head\_bucket
-
-```python
-@retry()
-def head_bucket(bucket: str) -> HeadBucketOutput
-```
-
-Retrieve metadata for a bucket.
-
-**Arguments**:
-
-- `bucket` _str_ - The bucket name.
-  
-
-**Returns**:
-
-- `HeadBucketOutput` - Bucket metadata including region.
-  
-
-**Raises**:
-
-- `BucketError` - If the operation fails.
-
-<a id="client.ACSClient.rotate_key"></a>
-
-### ACSClient.rotate\_key
-
-```python
-@retry()
-def rotate_key(force: bool = False) -> None
-```
-
-Rotate access keys.
-
-**Arguments**:
-
-- `force` _bool, optional_ - Whether to force key rotation even if not needed.
-  
-
-**Raises**:
-
-- `ConfigurationError` - If key rotation fails.
-
-<a id="client.ACSClient.share_bucket"></a>
-
-### ACSClient.share\_bucket
-
-```python
-@retry()
-def share_bucket(bucket: str) -> None
-```
-
-Share a bucket with the ACS service.
-
-**Arguments**:
-
-- `bucket` _str_ - The bucket name.
-  
-
-**Raises**:
-
-- `BucketError` - If sharing fails.
-
-# FUSE
-The FUSE mount transforms the Accelerated Object Storage offering into a POSIX-like operating system. You can setup this mount by creating a directory for your mount and picking a bucket you would like to mount. Then simply run this command in your terminal.
-
-```
-python -m acs_sdk.fuse.fuse_mount <bucket> <mountpoint>
-```
+- `

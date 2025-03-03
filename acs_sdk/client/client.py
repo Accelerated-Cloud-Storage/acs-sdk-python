@@ -21,15 +21,21 @@ class ACSClient:
     
     # Constants 
     SERVER_ADDRESS = "acceleratedcloudstorages3cache.com:50050"
-    CHUNK_SIZE = 64 * 1024  # 64KB chunks for streaming
+    BASE_CHUNK_SIZE = 64 * 1024  # 64KB base chunk size for streaming
     COMPRESSION_THRESHOLD = 100 * 1024 * 1024  # 100MB threshold for compression
 
-    def __init__(self):
+    def __init__(self, session: Optional[Session] = None):
         """Initialize the ACSClient.
+
+        Args:
+            session (Optional[Session], optional): Configuration for the client session. Defaults to None.
 
         Sets up a secure gRPC channel, loads credentials, authenticates,
         and checks for key rotation.
         """
+        # Store the session or create a default one
+        self.session = session or Session()
+        
         # Load the CA certificate from the correct location
         pkg_root = os.path.dirname(os.path.dirname(__file__))  # Go up one level from client dir
         ca_cert_path = os.path.join(pkg_root, 'internal', 'ca-chain.pem')
@@ -128,7 +134,8 @@ class ACSClient:
         """
         request = pb.AuthRequest(
             access_key_id=creds['access_key_id'],
-            secret_access_key=creds['secret_access_key']
+            secret_access_key=creds['secret_access_key'],
+            region=self.session.region
         )
         self.client.Authenticate(request)
 
@@ -144,17 +151,16 @@ class ACSClient:
             print(f"Warning: Key rotation check failed: {e}")
 
     @retry()
-    def create_bucket(self, bucket: str, region: str) -> None:
-        """Create a new bucket in the specified region.
+    def create_bucket(self, bucket: str) -> None:
+        """Create a new bucket.
 
         Args:
             bucket (str): The bucket name.
-            region (str): The region in which to create the bucket.
 
         Raises:
             BucketError: If bucket creation fails.
         """
-        request = pb.CreateBucketRequest(bucket=bucket, region=region)
+        request = pb.CreateBucketRequest(bucket=bucket)
         try:
             self.client.CreateBucket(request)
         except grpc.RpcError as e:
@@ -206,20 +212,33 @@ class ACSClient:
                     isCompressed=is_compressed
                 )
             )
+            
+            # Calculate appropriate chunk size based on data size
+            total_size = len(data)
+            if total_size < 1024 * 1024:  # < 1MB
+                chunk_size = self.BASE_CHUNK_SIZE
+            elif total_size < 10 * 1024 * 1024:  # < 10MB
+                chunk_size = 256 * 1024  # 256KB
+            elif total_size < 100 * 1024 * 1024:  # < 100MB
+                chunk_size = 1024 * 1024  # 1MB
+            else:
+                chunk_size = 4 * 1024 * 1024  # 4MB
+            
             # Send data chunks
-            for i in range(0, len(data), self.CHUNK_SIZE):
-                chunk = data[i:i + self.CHUNK_SIZE]
+            for i in range(0, len(data), chunk_size):
+                chunk = data[i:i + chunk_size]
                 yield pb.PutObjectRequest(chunk=chunk)
 
         self.client.PutObject(request_generator())
 
     @retry()
-    def get_object(self, bucket: str, key: str) -> bytes:
+    def get_object(self, bucket: str, key: str, byte_range: Optional[str] = None) -> bytes:
         """Download an object from a bucket.
 
         Args:
             bucket (str): The bucket name.
             key (str): The object key.
+            byte_range (Optional[str], optional): Byte range to download (e.g. "0-1023"). Defaults to None.
 
         Returns:
             bytes: The downloaded object data.
@@ -229,17 +248,41 @@ class ACSClient:
         """
         try:
             request = pb.GetObjectRequest(bucket=bucket, key=key)
+            if byte_range:
+                request.range = byte_range
+                
             response_stream = self.client.GetObject(request)
             first_message = True
             chunks = []
+            is_compressed = False
+            
             for response in response_stream:
                 if first_message:
                     first_message = False
+                    # Process metadata from first message
+                    if response.HasField('metadata'):
+                        # Safely access the is_compressed field
+                        try:
+                            is_compressed = response.metadata.is_compressed
+                        except AttributeError:
+                            # Log the error for debugging
+                            print("Warning: Could not access is_compressed attribute in metadata")
+                            is_compressed = False
                     continue
+                    
                 if response.HasField('chunk'):
                     chunks.append(response.chunk)
             
-            return b''.join(chunks)
+            data = b''.join(chunks)
+            
+            # Decompress if needed
+            if is_compressed:
+                try:
+                    data = gzip.decompress(data)
+                except Exception as e:
+                    raise ObjectError(f"Failed to decompress object: {str(e)}") from e
+                    
+            return data
         except grpc.RpcError as e:
             raise ObjectError(f"Failed to get object: {e.details()}") from e
 
