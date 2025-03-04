@@ -649,10 +649,14 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
         'nonempty': True,
         'debug': True,
         'default_permissions': True,
-        'direct_io': False,
+        'direct_io': False,  
         'rw': True,
         'big_writes': True,
-        'max_read': 1024 * 1024 * 1024,  # 1 GB
+        'max_read': 1024 * 1024 * 1024,  # 1GB read size
+        'max_write': 1024 * 1024 * 1024,  # 1GB write size
+        'kernel_cache': True,  # Enable kernel caching
+        'auto_cache': True,   # Enable automatic cache management
+        'max_readahead': 1024 * 1024 * 1024,  # 1GB readahead
     }
 
     # Define a signal handler to catch SIGINT and SIGTERM
