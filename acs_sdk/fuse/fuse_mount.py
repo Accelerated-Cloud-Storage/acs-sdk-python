@@ -196,7 +196,25 @@ class ACSFuse(Operations):
 
         try:
             key = self._get_path(path)
-            # First try to get object metadata directly
+            # First check if it's a directory by checking with trailing slash
+            dir_key = key if key.endswith('/') else key + '/'
+            try:
+                client_start = time.time()
+                # List objects with this prefix to check if it's a directory
+                objects = list(self.client.list_objects(
+                    self.bucket,
+                    ListObjectsOptions(prefix=dir_key, max_keys=1)
+                ))
+                logger.info(f"list_objects call for directory check {dir_key} completed in {time.time() - client_start:.4f} seconds")
+                
+                if objects:  # If we found any objects with this prefix, it's a directory
+                    result = {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2}
+                    time_function("getattr", start_time)
+                    return result
+            except Exception as dir_e:
+                logger.debug(f"Directory check failed for {dir_key}: {str(dir_e)}")
+
+            # If not a directory, try as a regular file
             try:
                 client_start = time.time()
                 metadata = self.client.head_object(self.bucket, key)
@@ -209,17 +227,13 @@ class ACSFuse(Operations):
                         'st_nlink': 1}
                 time_function("getattr", start_time)
                 return result
-            except:
-                # If not found as a file, check if it's a directory
-                dir_key = key if key.endswith('/') else key + '/'
-                # Check for directory by getting metadata
-                client_start = time.time()
-                metadata = self.client.head_object(self.bucket, dir_key)
-                logger.info(f"head_object call for directory {dir_key} completed in {time.time() - client_start:.4f} seconds")
-                
-                result = {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2}
+            except Exception as e:
+                if "NoSuchKey" in str(e):
+                    logger.debug(f"Object {key} does not exist")
+                else:
+                    logger.error(f"Error checking file {key}: {str(e)}")
                 time_function("getattr", start_time)
-                return result
+                raise FuseOSError(errno.ENOENT)
                 
         except Exception as e:
             logger.error(f"getattr error for {path}: {str(e)}")
