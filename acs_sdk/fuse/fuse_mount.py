@@ -9,13 +9,13 @@ from acs_sdk.client.client import ACSClient
 from acs_sdk.client.client import Session
 from acs_sdk.client.types import ListObjectsOptions
 from io import BytesIO
-from threading import Lock, Timer
-from collections import OrderedDict
+from threading import Lock, RLock
 import subprocess
 import signal
 import logging
 import time
 import threading
+import math
 
 # Configure logging
 logging.basicConfig(
@@ -31,55 +31,104 @@ def time_function(func_name, start_time):
     return elapsed
 
 # Cache configuration
-READ_CACHE_TTL = 60  # seconds
+MIN_TTL = 1  # 1 second for small files
+MAX_TTL = 600  # 10 minutes maximum TTL
+MIN_SIZE = 1 * 1024  # 1KB
+MAX_SIZE = 5 * 1024 * 1024 * 1024 * 1024  # 5TB
+
+def calculate_ttl(size: int) -> int:
+    """Calculate TTL based on file size using logarithmic scaling.
+    
+    Args:
+        size (int): Size of the file in bytes
+        
+    Returns:
+        int: TTL in seconds, between MIN_TTL and MAX_TTL
+    """
+    if size <= MIN_SIZE:
+        return MIN_TTL
+    if size >= MAX_SIZE:
+        return MAX_TTL
+        
+    # Use logarithmic scaling to calculate TTL
+    # This gives a smoother curve between MIN_TTL and MAX_TTL
+    log_min = math.log(MIN_SIZE)
+    log_max = math.log(MAX_SIZE)
+    log_size = math.log(size)
+    
+    # Calculate percentage between min and max (in log space)
+    percentage = (log_size - log_min) / (log_max - log_min)
+    
+    # Calculate TTL
+    ttl = MIN_TTL + percentage * (MAX_TTL - MIN_TTL)
+    return int(ttl)
 
 class CacheEntry:
-    """Represents a cached file in memory."""
+    """Represents a cached file with access time tracking."""
     def __init__(self, data: bytes):
         self.data = data
-        self.lock = threading.Lock()
+        self.last_access = time.time()
+        self.timer = None
+        self.ttl = calculate_ttl(len(data))
 
 class ReadCache:
-    """Thread-safe LRU cache for file contents."""
+    """Fast dictionary-based cache for file contents with size-based TTL expiration."""
     def __init__(self):
-        self.cache = OrderedDict()  # {key: CacheEntry}
-        self.lock = threading.Lock()
+        self.cache = {}  # Simple dict for faster lookups
+        self.lock = RLock()  # Reentrant lock for nested operations
 
     def get(self, key: str) -> bytes:
-        """Get data from cache."""
+        """Get data from cache and update access time."""
         with self.lock:
-            if key in self.cache:
-                entry = self.cache[key]
-                # Move to end (most recently used)
-                self.cache.move_to_end(key)
+            entry = self.cache.get(key)
+            if entry:
+                # Update last access time
+                entry.last_access = time.time()
+                
+                # Reset TTL timer with size-based TTL
+                if entry.timer:
+                    entry.timer.cancel()
+                entry.timer = threading.Timer(entry.ttl, lambda: self.remove(key))
+                entry.timer.daemon = True
+                entry.timer.start()
+                
+                logger.debug(f"Cache hit for {key} (size: {len(entry.data)}, TTL: {entry.ttl}s)")
                 return entry.data
             return None
 
     def put(self, key: str, data: bytes) -> None:
-        """Add data to cache."""
+        """Add data to cache with size-based TTL."""
         with self.lock:
             # Remove existing entry if present
-            if key in self.cache:
-                self._remove_entry(key)
-
-            # Add new entry
+            if key in self.cache and self.cache[key].timer:
+                self.cache[key].timer.cancel()
+            
+            # Create new entry with size-based TTL
             entry = CacheEntry(data)
+            entry.timer = threading.Timer(entry.ttl, lambda: self.remove(key))
+            entry.timer.daemon = True
+            entry.timer.start()
+            
+            logger.debug(f"Added to cache: {key} (size: {len(data)}, TTL: {entry.ttl}s)")
             self.cache[key] = entry
 
     def remove(self, key: str) -> None:
         """Remove an entry from cache."""
         with self.lock:
-            self._remove_entry(key)
-
-    def _remove_entry(self, key: str) -> None:
-        """Internal method to remove cache entry."""
-        if key in self.cache:
-            del self.cache[key]
+            if key in self.cache:
+                if self.cache[key].timer:
+                    self.cache[key].timer.cancel()
+                logger.debug(f"Removed from cache: {key}")
+                del self.cache[key]
 
     def clear(self) -> None:
         """Clear all entries from cache."""
         with self.lock:
+            for entry in self.cache.values():
+                if entry.timer:
+                    entry.timer.cancel()
             self.cache.clear()
+            logger.debug("Cache cleared")
 
 class ACSFuse(Operations):
     """FUSE implementation for Accelerated Cloud Storage."""
@@ -117,7 +166,7 @@ class ACSFuse(Operations):
             logger.error(f"Failed to access bucket {bucket_name}: {str(e)}")
             raise ValueError(f"Failed to access bucket {bucket_name}: {str(e)}")
             
-        logger.info(f"__init__ completed in {time.time() - start_time:.4f} seconds")
+        time_function("__init__", start_time)
 
     def _get_path(self, path):
         """Convert FUSE path to ACS key."""
@@ -279,34 +328,37 @@ class ACSFuse(Operations):
         
         key = self._get_path(path)
         try:
-            # First check if data is in cache
-            cached_data = self.read_cache.get(key)
+            # Fast path: Check in-memory cache first
+            cache_entry = self.read_cache.get(key)
             
-            if cached_data is None:
-                # Not in cache, get from object storage
+            if cache_entry is None:
+                # Cache miss - fetch from object storage
                 logger.debug(f"Cache miss for {key}, fetching from object storage")
                 try:
                     client_start = time.time()
-                    cached_data = self.client.get_object(self.bucket, key)
+                    data = self.client.get_object(self.bucket, key)
                     logger.info(f"get_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                    
                     # Store in cache
-                    self.read_cache.put(key, cached_data)
+                    self.read_cache.put(key, data)
                 except Exception as e:
                     logger.error(f"Error fetching {key} from object storage: {str(e)}")
                     raise
             else:
                 logger.debug(f"Cache hit for {key}")
+                data = cache_entry
             
             # Return requested portion from cache
-            if offset >= len(cached_data):
-                logger.info(f"Offset {offset} is beyond file size {len(cached_data)}, returning empty bytes")
+            if offset >= len(data):
+                logger.info(f"Offset {offset} is beyond file size {len(data)}, returning empty bytes")
+                time_function("read", start_time)
                 return b""
                 
-            end_offset = min(offset + size, len(cached_data))
-            data = cached_data[offset:end_offset]
+            end_offset = min(offset + size, len(data))
+            result = data[offset:end_offset]
             
             time_function("read", start_time)
-            return data
+            return result
             
         except Exception as e:
             logger.error(f"Error reading {key}: {str(e)}")
@@ -314,15 +366,16 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
 
     def write(self, path, data, offset, fh):
-        """Write file contents to buffer."""
-        logger.info(f"write: {path}, data_size={len(data)}, offset={offset}")
+        """Write data to an in-memory buffer, to be flushed on close."""
+        logger.info(f"write: {path}, size={len(data)}, offset={offset}")
         start_time = time.time()
         
-        key = self._get_path(path)
         try:
             with self.buffer_lock:
+                key = self._get_path(path)
                 if key not in self.buffers:
-                    # Initialize buffer with existing content if file exists
+                    # Initialize buffer with existing data or empty
+                    logger.info(f"Initializing buffer for {key}")
                     try:
                         client_start = time.time()
                         current_data = self.client.get_object(self.bucket, key)
@@ -343,6 +396,9 @@ class ACSFuse(Operations):
                 buffer.seek(offset)
                 buffer.write(data)
                 logger.debug(f"Wrote {len(data)} bytes to buffer for {key} at offset {offset}")
+                
+                # Invalidate read cache entry since file has changed
+                self.read_cache.remove(key)
                 
                 time_function("write", start_time)
                 return len(data)
@@ -512,13 +568,16 @@ class ACSFuse(Operations):
                     self.client.put_object(self.bucket, key, data)
                     logger.info(f"put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
                     
+                    # Invalidate read cache entry since file has been updated
+                    self.read_cache.remove(key)
+                    
                     time_function("_flush_buffer", start_time)
                 except Exception as e:
-                    logger.error(f"Error flushing buffer for {key}: {str(e)}")
+                    logger.error(f"Error flushing {key} to storage: {str(e)}")
                     time_function("_flush_buffer", start_time)
-                    raise FuseOSError(errno.EIO)
+                    raise
             else:
-                logger.debug(f"No buffer to flush for {path}")
+                logger.debug(f"No buffer to flush for {key}")
                 time_function("_flush_buffer", start_time)
 
     def release(self, path, fh):
@@ -590,10 +649,10 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
         'nonempty': True,
         'debug': True,
         'default_permissions': True,
-        'direct_io': True,
+        'direct_io': False,
         'rw': True,
         'big_writes': True,
-        'max_read': 100 * 1024 * 1024,  # 100 MB 
+        'max_read': 1024 * 1024 * 1024,  # 1 GB
     }
 
     # Define a signal handler to catch SIGINT and SIGTERM
