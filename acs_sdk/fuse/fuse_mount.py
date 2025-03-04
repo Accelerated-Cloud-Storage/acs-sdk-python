@@ -19,7 +19,7 @@ import math
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('ACSFuse')
@@ -237,7 +237,7 @@ class ACSFuse(Operations):
                 raise FuseOSError(errno.ENOENT)
                 
         except Exception as e:
-            logger.error(f"getattr error for {path}: {str(e)}")
+            logger.info(f"getattr error for {path}: {str(e)}")
             time_function("getattr", start_time)
             raise FuseOSError(errno.ENOENT)
 
@@ -707,7 +707,7 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
     options = {
         'foreground': foreground,
         'nonempty': True,
-        'debug': True,
+        'debug': False,
         'default_permissions': True,
         'direct_io': False,  
         'rw': True,
