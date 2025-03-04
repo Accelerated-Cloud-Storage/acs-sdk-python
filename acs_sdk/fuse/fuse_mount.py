@@ -220,8 +220,9 @@ class ACSFuse(Operations):
                 metadata = self.client.head_object(self.bucket, key)
                 logger.info(f"head_object call for {key} completed in {time.time() - client_start:.4f} seconds")
                 
+                # Regular file
                 result = {**base_stat,
-                        'st_mode': 0o100644,
+                        'st_mode': 0o100644,  # Regular file mode
                         'st_size': metadata.content_length,
                         'st_mtime': metadata.last_modified.timestamp(),
                         'st_nlink': 1}
@@ -613,6 +614,51 @@ class ACSFuse(Operations):
         logger.debug(f"Removed {key} from read cache")
                 
         time_function("release", start_time)
+        return 0
+
+    def link(self, target, name):
+        """Create hard link by copying the object (since true hard links aren't supported in object storage)."""
+        logger.info(f"link: target={target}, name={name}")
+        start_time = time.time()
+        
+        try:
+            target_key = self._get_path(target)
+            new_key = self._get_path(name)
+            
+            # First verify target exists
+            try:
+                client_start = time.time()
+                metadata = self.client.head_object(self.bucket, target_key)
+                logger.info(f"head_object call for {target_key} completed in {time.time() - client_start:.4f} seconds")
+            except Exception as e:
+                logger.error(f"Target object {target_key} does not exist: {str(e)}")
+                raise FuseOSError(errno.ENOENT)
+            
+            # Get the source object data
+            client_start = time.time()
+            data = self.client.get_object(self.bucket, target_key)
+            logger.info(f"get_object call for {target_key} completed in {time.time() - client_start:.4f} seconds")
+            
+            # Create the new object with the same data
+            client_start = time.time()
+            self.client.put_object(self.bucket, new_key, data)
+            logger.info(f"put_object call for {new_key} completed in {time.time() - client_start:.4f} seconds")
+            
+            time_function("link", start_time)
+            return 0
+        except Exception as e:
+            logger.error(f"Error creating link from {target} to {name}: {str(e)}")
+            time_function("link", start_time)
+            raise FuseOSError(errno.EIO)
+
+    def flock(self, path, op, fh):
+        """File locking operation (implemented as a no-op since object storage doesn't support file locking)."""
+        logger.info(f"flock: {path}, op={op}")
+        start_time = time.time()
+        
+        # This is a no-op operation since object storage doesn't support file locking
+        # Always return success regardless of the operation requested
+        time_function("flock", start_time)
         return 0
 
 def unmount(mountpoint):
