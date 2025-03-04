@@ -9,11 +9,13 @@ from acs_sdk.client.client import ACSClient
 from acs_sdk.client.client import Session
 from acs_sdk.client.types import ListObjectsOptions
 from io import BytesIO
-from threading import Lock
+from threading import Lock, Timer
+from collections import OrderedDict
 import subprocess
 import signal
 import logging
 import time
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +29,57 @@ def time_function(func_name, start_time):
     elapsed = time.time() - start_time
     logger.info(f"{func_name} completed in {elapsed:.4f} seconds")
     return elapsed
+
+# Cache configuration
+READ_CACHE_TTL = 60  # seconds
+
+class CacheEntry:
+    """Represents a cached file in memory."""
+    def __init__(self, data: bytes):
+        self.data = data
+        self.lock = threading.Lock()
+
+class ReadCache:
+    """Thread-safe LRU cache for file contents."""
+    def __init__(self):
+        self.cache = OrderedDict()  # {key: CacheEntry}
+        self.lock = threading.Lock()
+
+    def get(self, key: str) -> bytes:
+        """Get data from cache."""
+        with self.lock:
+            if key in self.cache:
+                entry = self.cache[key]
+                # Move to end (most recently used)
+                self.cache.move_to_end(key)
+                return entry.data
+            return None
+
+    def put(self, key: str, data: bytes) -> None:
+        """Add data to cache."""
+        with self.lock:
+            # Remove existing entry if present
+            if key in self.cache:
+                self._remove_entry(key)
+
+            # Add new entry
+            entry = CacheEntry(data)
+            self.cache[key] = entry
+
+    def remove(self, key: str) -> None:
+        """Remove an entry from cache."""
+        with self.lock:
+            self._remove_entry(key)
+
+    def _remove_entry(self, key: str) -> None:
+        """Internal method to remove cache entry."""
+        if key in self.cache:
+            del self.cache[key]
+
+    def clear(self) -> None:
+        """Clear all entries from cache."""
+        with self.lock:
+            self.cache.clear()
 
 class ACSFuse(Operations):
     """FUSE implementation for Accelerated Cloud Storage."""
@@ -51,6 +104,9 @@ class ACSFuse(Operations):
         self.bucket = bucket_name # Each mount is tied to one bucket
         self.buffers = {}  # Dictionary to store file buffers
         self.buffer_lock = Lock()  # Lock for thread-safe buffer access
+        
+        # Initialize read cache
+        self.read_cache = ReadCache()
 
         # Verify bucket exists
         try:
@@ -61,7 +117,7 @@ class ACSFuse(Operations):
             logger.error(f"Failed to access bucket {bucket_name}: {str(e)}")
             raise ValueError(f"Failed to access bucket {bucket_name}: {str(e)}")
             
-        time_function("__init__", start_time)
+        logger.info(f"__init__ completed in {time.time() - start_time:.4f} seconds")
 
     def _get_path(self, path):
         """Convert FUSE path to ACS key."""
@@ -217,37 +273,41 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
     
     def read(self, path, size, offset, fh):
-        """Read file contents, checking buffer first."""
+        """Read file contents, checking cache first."""
         logger.info(f"read: {path}, size={size}, offset={offset}")
         start_time = time.time()
         
         key = self._get_path(path)
         try:
-            # First, get the file size using head_object
-            client_start = time.time()
-            head_response = self.client.head_object(self.bucket, key)
-            logger.info(f"head_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+            # First check if data is in cache
+            cached_data = self.read_cache.get(key)
             
-            file_size = head_response.content_length
+            if cached_data is None:
+                # Not in cache, get from object storage
+                logger.debug(f"Cache miss for {key}, fetching from object storage")
+                try:
+                    client_start = time.time()
+                    cached_data = self.client.get_object(self.bucket, key)
+                    logger.info(f"get_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                    # Store in cache
+                    self.read_cache.put(key, cached_data)
+                except Exception as e:
+                    logger.error(f"Error fetching {key} from object storage: {str(e)}")
+                    raise
+            else:
+                logger.debug(f"Cache hit for {key}")
             
-            # If offset is beyond the end of the file, return empty bytes
-            if offset >= file_size:
-                logger.info(f"Offset {offset} is beyond file size {file_size}, returning empty bytes")
-                time_function("read", start_time)
+            # Return requested portion from cache
+            if offset >= len(cached_data):
+                logger.info(f"Offset {offset} is beyond file size {len(cached_data)}, returning empty bytes")
                 return b""
-            
-            # Adjust the size if it would read beyond the end of the file
-            if offset + size > file_size:
-                size = file_size - offset
-                logger.info(f"Adjusted read size to {size} bytes")
-            
-            # Read from Object Storage with adjusted range
-            client_start = time.time()
-            data = self.client.get_object(self.bucket, key, byte_range=f"bytes={offset}-{offset + size - 1}")
-            logger.info(f"get_object call for {key} (range: bytes={offset}-{offset + size - 1}) completed in {time.time() - client_start:.4f} seconds")
+                
+            end_offset = min(offset + size, len(cached_data))
+            data = cached_data[offset:end_offset]
             
             time_function("read", start_time)
             return data
+            
         except Exception as e:
             logger.error(f"Error reading {key}: {str(e)}")
             time_function("read", start_time)
@@ -468,11 +528,16 @@ class ACSFuse(Operations):
         
         # Called after the last file descriptor is closed
         self._flush_buffer(path)
+        key = self._get_path(path)
+        
         with self.buffer_lock:
-            key = self._get_path(path)
             if key in self.buffers:
                 del self.buffers[key]
                 logger.debug(f"Removed buffer for {key}")
+        
+        # Remove from read cache when file is no longer being accessed
+        self.read_cache.remove(key)
+        logger.debug(f"Removed {key} from read cache")
                 
         time_function("release", start_time)
         return 0
@@ -492,6 +557,13 @@ def unmount(mountpoint):
             print(f"{mountpoint} is not mounted, nothing to unmount.")
             time_function("unmount", start_time)
             return
+            
+        # Clear all caches before unmounting
+        fuse_ops = next((fuse for fuse in FUSE._active_fuseops if isinstance(fuse, ACSFuse)), None)
+        if fuse_ops:
+            fuse_ops.read_cache.clear()
+            logger.info("Cleared read cache")
+            
         subprocess.run(["fusermount", "-u", mountpoint], check=True)
         logger.info(f"Unmounted {mountpoint} gracefully.")
         print(f"Unmounted {mountpoint} gracefully.")
