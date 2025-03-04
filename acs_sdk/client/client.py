@@ -438,7 +438,7 @@ class ACSClient:
 
         Args:
             bucket (str): The destination bucket name.
-            copy_source (str): The source object identifier.
+            copy_source (str): The source bucket name and object key.
             key (str): The destination object key.
 
         Raises:
