@@ -1,4 +1,23 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
+"""
+FUSE implementation for ACS.
+
+This module provides the core FUSE implementation for mounting ACS buckets
+as local filesystems. It handles file operations like read, write, create,
+and delete by translating them to ACS API calls.
+
+Usage:
+    # Create a mount point
+    mkdir -p /mnt/acs-bucket
+
+    # Mount the bucket
+    python -m acs_sdk.fuse my-bucket /mnt/acs-bucket
+
+    # Now you can work with the files as if they were local
+    ls /mnt/acs-bucket
+    cat /mnt/acs-bucket/example.txt
+"""
+
 from fuse import FUSE, FuseOSError, Operations
 import errno
 import os
@@ -9,135 +28,38 @@ from acs_sdk.client.client import ACSClient
 from acs_sdk.client.client import Session
 from acs_sdk.client.types import ListObjectsOptions
 from io import BytesIO
-from threading import Lock, RLock
-import subprocess
-import signal
-import logging
-import time
-import threading
-import math
+from threading import Lock
 
-# Configure logging
-logging.basicConfig(
-    level=logging.ERROR,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('ACSFuse')
-
-# Helper function for timing operations
-def time_function(func_name, start_time):
-    elapsed = time.time() - start_time
-    logger.info(f"{func_name} completed in {elapsed:.4f} seconds")
-    return elapsed
-
-# Cache configuration
-MIN_TTL = 1  # 1 second for small files
-MAX_TTL = 600  # 10 minutes maximum TTL
-MIN_SIZE = 1 * 1024  # 1KB
-MAX_SIZE = 5 * 1024 * 1024 * 1024 * 1024  # 5TB
-
-def calculate_ttl(size: int) -> int:
-    """Calculate TTL based on file size using logarithmic scaling.
-    
-    Args:
-        size (int): Size of the file in bytes
-        
-    Returns:
-        int: TTL in seconds, between MIN_TTL and MAX_TTL
-    """
-    if size <= MIN_SIZE:
-        return MIN_TTL
-    if size >= MAX_SIZE:
-        return MAX_TTL
-        
-    # Use logarithmic scaling to calculate TTL
-    # This gives a smoother curve between MIN_TTL and MAX_TTL
-    log_min = math.log(MIN_SIZE)
-    log_max = math.log(MAX_SIZE)
-    log_size = math.log(size)
-    
-    # Calculate percentage between min and max (in log space)
-    percentage = (log_size - log_min) / (log_max - log_min)
-    
-    # Calculate TTL
-    ttl = MIN_TTL + percentage * (MAX_TTL - MIN_TTL)
-    return int(ttl)
-
-class CacheEntry:
-    """Represents a cached file with access time tracking."""
-    def __init__(self, data: bytes):
-        self.data = data
-        self.last_access = time.time()
-        self.timer = None
-        self.ttl = calculate_ttl(len(data))
-
-class ReadCache:
-    """Fast dictionary-based cache for file contents with size-based TTL expiration."""
-    def __init__(self):
-        self.cache = {}  # Simple dict for faster lookups
-        self.lock = RLock()  # Reentrant lock for nested operations
-
-    def get(self, key: str) -> bytes:
-        """Get data from cache and update access time."""
-        with self.lock:
-            entry = self.cache.get(key)
-            if entry:
-                # Update last access time
-                entry.last_access = time.time()
-                
-                # Reset TTL timer with size-based TTL
-                if entry.timer:
-                    entry.timer.cancel()
-                entry.timer = threading.Timer(entry.ttl, lambda: self.remove(key))
-                entry.timer.daemon = True
-                entry.timer.start()
-                
-                logger.debug(f"Cache hit for {key} (size: {len(entry.data)}, TTL: {entry.ttl}s)")
-                return entry.data
-            return None
-
-    def put(self, key: str, data: bytes) -> None:
-        """Add data to cache with size-based TTL."""
-        with self.lock:
-            # Remove existing entry if present
-            if key in self.cache and self.cache[key].timer:
-                self.cache[key].timer.cancel()
-            
-            # Create new entry with size-based TTL
-            entry = CacheEntry(data)
-            entry.timer = threading.Timer(entry.ttl, lambda: self.remove(key))
-            entry.timer.daemon = True
-            entry.timer.start()
-            
-            logger.debug(f"Added to cache: {key} (size: {len(data)}, TTL: {entry.ttl}s)")
-            self.cache[key] = entry
-
-    def remove(self, key: str) -> None:
-        """Remove an entry from cache."""
-        with self.lock:
-            if key in self.cache:
-                if self.cache[key].timer:
-                    self.cache[key].timer.cancel()
-                logger.debug(f"Removed from cache: {key}")
-                del self.cache[key]
-
-    def clear(self) -> None:
-        """Clear all entries from cache."""
-        with self.lock:
-            for entry in self.cache.values():
-                if entry.timer:
-                    entry.timer.cancel()
-            self.cache.clear()
-            logger.debug("Cache cleared")
+# Import from our new modules
+from .utils import logger, time_function
+from .buffer import ReadBuffer, BufferEntry, WriteBuffer, calculate_ttl
+from .mount_utils import unmount, setup_signal_handlers, get_mount_options
 
 class ACSFuse(Operations):
-    """FUSE implementation for Accelerated Cloud Storage."""
+    """
+    FUSE implementation for Accelerated Cloud Storage.
+    
+    This class implements the FUSE operations interface to provide
+    filesystem access to ACS buckets. It handles file operations by
+    translating them to ACS API calls and manages buffers for efficient
+    read and write operations.
+    
+    Attributes:
+        client (ACSClient): Client for ACS API calls
+        bucket (str): Name of the bucket being mounted
+        read_buffer (ReadBuffer): Buffer for read operations
+        write_buffer (WriteBuffer): Buffer for write operations
+    """
 
     def __init__(self, bucket_name):
-        """Initialize the FUSE filesystem with ACS client.
+        """
+        Initialize the FUSE filesystem with ACS client.
         
         Args:
             bucket_name (str): Name of the bucket to mount
+        
+        Raises:
+            ValueError: If the bucket cannot be accessed
         """
         logger.info(f"Initializing ACSFuse with bucket: {bucket_name}")
         start_time = time.time()
@@ -151,11 +73,10 @@ class ACSFuse(Operations):
         
         self.client = ACSClient(Session(region=bucket_info.region)) # Create client with bucket region
         self.bucket = bucket_name # Each mount is tied to one bucket
-        self.buffers = {}  # Dictionary to store file buffers
-        self.buffer_lock = Lock()  # Lock for thread-safe buffer access
         
-        # Initialize read cache
-        self.read_cache = ReadCache()
+        # Initialize buffers
+        self.read_buffer = ReadBuffer()
+        self.write_buffer = WriteBuffer()
 
         # Verify bucket exists
         try:
@@ -169,7 +90,15 @@ class ACSFuse(Operations):
         time_function("__init__", start_time)
 
     def _get_path(self, path):
-        """Convert FUSE path to ACS key."""
+        """
+        Convert FUSE path to ACS key.
+        
+        Args:
+            path (str): FUSE path
+            
+        Returns:
+            str: ACS object key
+        """
         logger.debug(f"Converting path: {path}")
         start_time = time.time()
         result = path.lstrip('/')
@@ -177,7 +106,22 @@ class ACSFuse(Operations):
         return result
 
     def getattr(self, path, fh=None):
-        """Get file attributes."""
+        """
+        Get file attributes.
+        
+        This method returns the attributes of a file or directory,
+        such as size, permissions, and modification time.
+        
+        Args:
+            path (str): Path to the file or directory
+            fh (int, optional): File handle. Defaults to None.
+            
+        Returns:
+            dict: File attributes
+            
+        Raises:
+            FuseOSError: If the file or directory does not exist
+        """
         logger.info(f"getattr: {path}")
         start_time = time.time()
         
@@ -242,7 +186,22 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.ENOENT)
 
     def readdir(self, path, fh):
-        """List directory contents."""
+        """
+        List directory contents.
+        
+        This method returns the contents of a directory, including
+        files and subdirectories.
+        
+        Args:
+            path (str): Path to the directory
+            fh (int): File handle
+            
+        Returns:
+            list: List of directory entries
+            
+        Raises:
+            FuseOSError: If an error occurs while listing the directory
+        """
         logger.info(f"readdir: {path}")
         start_time = time.time()
         
@@ -302,7 +261,19 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
 
     def rename(self, old, new):
-        """Rename a file or directory."""
+        """
+        Rename a file or directory.
+        
+        This method renames a file or directory by copying the object
+        to a new key and deleting the old one.
+        
+        Args:
+            old (str): Old path
+            new (str): New path
+            
+        Raises:
+            FuseOSError: If the source file does not exist or an error occurs
+        """
         logger.info(f"rename: {old} to {new}")
         start_time = time.time()
         
@@ -337,33 +308,50 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
     
     def read(self, path, size, offset, fh):
-        """Read file contents, checking cache first."""
+        """
+        Read file contents, checking buffer first.
+        
+        This method reads data from a file, first checking the read buffer
+        and falling back to object storage if necessary.
+        
+        Args:
+            path (str): Path to the file
+            size (int): Number of bytes to read
+            offset (int): Offset in the file to start reading from
+            fh (int): File handle
+            
+        Returns:
+            bytes: The requested data
+            
+        Raises:
+            FuseOSError: If an error occurs while reading the file
+        """
         logger.info(f"read: {path}, size={size}, offset={offset}")
         start_time = time.time()
         
         key = self._get_path(path)
         try:
-            # Fast path: Check in-memory cache first
-            cache_entry = self.read_cache.get(key)
+            # Fast path: Check in-memory buffer first
+            buffer_entry = self.read_buffer.get(key)
             
-            if cache_entry is None:
-                # Cache miss - fetch from object storage
-                logger.debug(f"Cache miss for {key}, fetching from object storage")
+            if buffer_entry is None:
+                # Buffer miss - fetch from object storage
+                logger.debug(f"Buffer miss for {key}, fetching from object storage")
                 try:
                     client_start = time.time()
                     data = self.client.get_object(self.bucket, key)
                     logger.info(f"get_object call for {key} completed in {time.time() - client_start:.4f} seconds")
                     
-                    # Store in cache
-                    self.read_cache.put(key, data)
+                    # Store in buffer
+                    self.read_buffer.put(key, data)
                 except Exception as e:
                     logger.error(f"Error fetching {key} from object storage: {str(e)}")
                     raise
             else:
-                logger.debug(f"Cache hit for {key}")
-                data = cache_entry
+                logger.debug(f"Buffer hit for {key}")
+                data = buffer_entry
             
-            # Return requested portion from cache
+            # Return requested portion from buffer
             if offset >= len(data):
                 logger.info(f"Offset {offset} is beyond file size {len(data)}, returning empty bytes")
                 time_function("read", start_time)
@@ -381,49 +369,74 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
 
     def write(self, path, data, offset, fh):
-        """Write data to an in-memory buffer, to be flushed on close."""
+        """
+        Write data to an in-memory buffer, to be flushed on close.
+        
+        This method writes data to a file by storing it in a write buffer,
+        which will be flushed to object storage when the file is closed.
+        
+        Args:
+            path (str): Path to the file
+            data (bytes): Data to write
+            offset (int): Offset in the file to start writing at
+            fh (int): File handle
+            
+        Returns:
+            int: Number of bytes written
+            
+        Raises:
+            FuseOSError: If an error occurs while writing the file
+        """
         logger.info(f"write: {path}, size={len(data)}, offset={offset}")
         start_time = time.time()
         
         try:
-            with self.buffer_lock:
-                key = self._get_path(path)
-                if key not in self.buffers:
-                    # Initialize buffer with existing data or empty
-                    logger.info(f"Initializing buffer for {key}")
-                    try:
-                        client_start = time.time()
-                        current_data = self.client.get_object(self.bucket, key)
-                        logger.info(f"get_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-                    except:
-                        logger.info(f"No existing data found for {key}, initializing empty buffer")
-                        current_data = b""
-                    self.buffers[key] = BytesIO(current_data)
+            key = self._get_path(path)
+            
+            # Initialize buffer if it doesn't exist
+            if not self.write_buffer.has_buffer(key):
+                logger.info(f"Initializing buffer for {key}")
+                try:
+                    client_start = time.time()
+                    current_data = self.client.get_object(self.bucket, key)
+                    logger.info(f"get_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                except:
+                    logger.info(f"No existing data found for {key}, initializing empty buffer")
+                    current_data = b""
+                self.write_buffer.initialize_buffer(key, current_data)
 
-                # Ensure buffer is large enough
-                buffer = self.buffers[key]
-                buffer.seek(0, 2)  # Seek to end
-                if buffer.tell() < offset:
-                    buffer.write(b'\x00' * (offset - buffer.tell()))
-                    logger.debug(f"Extended buffer for {key} to offset {offset}")
-
-                # Write data at offset
-                buffer.seek(offset)
-                buffer.write(data)
-                logger.debug(f"Wrote {len(data)} bytes to buffer for {key} at offset {offset}")
-                
-                # Invalidate read cache entry since file has changed
-                self.read_cache.remove(key)
-                
-                time_function("write", start_time)
-                return len(data)
+            # Write data to buffer
+            bytes_written = self.write_buffer.write(key, data, offset)
+            
+            # Invalidate read buffer entry since file has changed
+            self.read_buffer.remove(key)
+            
+            time_function("write", start_time)
+            return bytes_written
+            
         except Exception as e:
-            logger.error(f"Error writing to {key}: {str(e)}")
+            logger.error(f"Error writing to {path}: {str(e)}")
             time_function("write", start_time)
             raise FuseOSError(errno.EIO)
 
     def create(self, path, mode, fi=None):
-        """Create a new file."""
+        """
+        Create a new file.
+        
+        This method creates a new empty file in the object storage
+        and initializes a write buffer for it.
+        
+        Args:
+            path (str): Path to the file
+            mode (int): File mode
+            fi (dict, optional): File info. Defaults to None.
+            
+        Returns:
+            int: 0 on success
+            
+        Raises:
+            FuseOSError: If an error occurs while creating the file
+        """
         logger.info(f"create: {path}, mode={mode}")
         start_time = time.time()
         
@@ -435,9 +448,8 @@ class ACSFuse(Operations):
             logger.info(f"put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
 
             # Initialize buffer
-            with self.buffer_lock:
-                self.buffers[key] = BytesIO()
-                logger.debug(f"Initialized empty buffer for {key}")
+            self.write_buffer.initialize_buffer(key)
+            logger.debug(f"Initialized empty buffer for {key}")
                 
             time_function("create", start_time)
             return 0
@@ -447,7 +459,17 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
 
     def unlink(self, path):
-        """Delete a file if it exists."""
+        """
+        Delete a file if it exists.
+        
+        This method deletes a file from the object storage.
+        
+        Args:
+            path (str): Path to the file
+            
+        Raises:
+            FuseOSError: If an error occurs while deleting the file
+        """
         logger.info(f"unlink: {path}")
         start_time = time.time()
         
@@ -464,7 +486,19 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
 
     def mkdir(self, path, mode):
-        """Create a directory."""
+        """
+        Create a directory.
+        
+        This method creates a directory by creating an empty object
+        with a trailing slash in the key.
+        
+        Args:
+            path (str): Path to the directory
+            mode (int): Directory mode
+            
+        Raises:
+            FuseOSError: If an error occurs while creating the directory
+        """
         logger.info(f"mkdir: {path}, mode={mode}")
         start_time = time.time()
         
@@ -484,7 +518,17 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
 
     def rmdir(self, path):
-        """Remove a directory."""
+        """
+        Remove a directory.
+        
+        This method removes a directory if it is empty.
+        
+        Args:
+            path (str): Path to the directory
+            
+        Raises:
+            FuseOSError: If the directory is not empty or an error occurs
+        """
         logger.info(f"rmdir: {path}")
         start_time = time.time()
         
@@ -520,45 +564,45 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
     
     def truncate(self, path, length, fh=None):
-        """Truncate file to specified length."""
+        """
+        Truncate file to specified length.
+        
+        This method changes the size of a file by either truncating it
+        or extending it with null bytes.
+        
+        Args:
+            path (str): Path to the file
+            length (int): New length of the file
+            fh (int, optional): File handle. Defaults to None.
+            
+        Returns:
+            int: 0 on success
+            
+        Raises:
+            FuseOSError: If an error occurs while truncating the file
+        """
         logger.info(f"truncate: {path}, length={length}")
         start_time = time.time()
         
         key = self._get_path(path)
         try:
-            with self.buffer_lock:
-                if key in self.buffers:
-                    # Modify buffer if it exists
-                    buffer = self.buffers[key]
-                    buffer.seek(0)
-                    data = buffer.read()
-                    logger.debug(f"Using existing buffer for {key}")
-                else:
-                    # Read from ACS if no buffer exists
-                    try:
-                        client_start = time.time()
-                        data = self.client.get_object(self.bucket, key)
-                        logger.info(f"get_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-                    except:
-                        logger.info(f"No existing data found for {key}, initializing empty buffer")
-                        data = b""
-                    self.buffers[key] = BytesIO()
-                    logger.debug(f"Created new buffer for {key}")
-
-                # Truncate data
-                if length < len(data):
-                    data = data[:length]
-                    logger.debug(f"Truncated data to {length} bytes")
-                elif length > len(data):
-                    data += b'\x00' * (length - len(data))
-                    logger.debug(f"Extended data to {length} bytes")
-
-                # Update buffer
-                buffer = self.buffers[key]
-                buffer.seek(0)
-                buffer.write(data)
-                buffer.truncate()
-                
+            # If buffer doesn't exist, initialize it with existing data
+            if not self.write_buffer.has_buffer(key):
+                try:
+                    client_start = time.time()
+                    data = self.client.get_object(self.bucket, key)
+                    logger.info(f"get_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                except:
+                    logger.info(f"No existing data found for {key}, initializing empty buffer")
+                    data = b""
+                self.write_buffer.initialize_buffer(key, data)
+            
+            # Truncate the buffer
+            self.write_buffer.truncate(key, length)
+            
+            # Invalidate read buffer
+            self.read_buffer.remove(key)
+            
             time_function("truncate", start_time)
         except Exception as e:
             logger.error(f"Error truncating {key}: {str(e)}")
@@ -567,36 +611,56 @@ class ACSFuse(Operations):
         return 0
 
     def _flush_buffer(self, path):
-        """Flush the in-memory buffer for a file to ACS storage."""
+        """
+        Flush the in-memory buffer for a file to ACS storage.
+        
+        This method writes the contents of the write buffer to object storage.
+        
+        Args:
+            path (str): Path to the file
+            
+        Raises:
+            Exception: If an error occurs while flushing the buffer
+        """
         logger.info(f"_flush_buffer: {path}")
         start_time = time.time()
         
-        with self.buffer_lock:
-            key = self._get_path(path)
-            if key in self.buffers:
-                # Get buffer data and write to ACS
-                buffer = self.buffers[key]
-                buffer.seek(0)
-                data = buffer.read()
-                try:
-                    client_start = time.time()
-                    self.client.put_object(self.bucket, key, data)
-                    logger.info(f"put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-                    
-                    # Invalidate read cache entry since file has been updated
-                    self.read_cache.remove(key)
-                    
-                    time_function("_flush_buffer", start_time)
-                except Exception as e:
-                    logger.error(f"Error flushing {key} to storage: {str(e)}")
-                    time_function("_flush_buffer", start_time)
-                    raise
-            else:
-                logger.debug(f"No buffer to flush for {key}")
+        key = self._get_path(path)
+        
+        # Check if there's a buffer to flush
+        data = self.write_buffer.read(key)
+        if data is not None:
+            try:
+                client_start = time.time()
+                self.client.put_object(self.bucket, key, data)
+                logger.info(f"put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                
+                # Invalidate read buffer entry since file has been updated
+                self.read_buffer.remove(key)
+                
                 time_function("_flush_buffer", start_time)
+            except Exception as e:
+                logger.error(f"Error flushing {key} to storage: {str(e)}")
+                time_function("_flush_buffer", start_time)
+                raise
+        else:
+            logger.debug(f"No buffer to flush for {key}")
+            time_function("_flush_buffer", start_time)
 
     def release(self, path, fh):
-        """Release the file handle and flush the write buffer to ACS storage."""
+        """
+        Release the file handle and flush the write buffer to ACS storage.
+        
+        This method is called when a file is closed. It flushes the write buffer
+        to object storage and removes the file from both buffers.
+        
+        Args:
+            path (str): Path to the file
+            fh (int): File handle
+            
+        Returns:
+            int: 0 on success
+        """
         logger.info(f"release: {path}")
         start_time = time.time()
         
@@ -604,20 +668,33 @@ class ACSFuse(Operations):
         self._flush_buffer(path)
         key = self._get_path(path)
         
-        with self.buffer_lock:
-            if key in self.buffers:
-                del self.buffers[key]
-                logger.debug(f"Removed buffer for {key}")
+        # Remove from write buffer
+        self.write_buffer.remove(key)
         
-        # Remove from read cache when file is no longer being accessed
-        self.read_cache.remove(key)
-        logger.debug(f"Removed {key} from read cache")
+        # Remove from read buffer when file is no longer being accessed
+        self.read_buffer.remove(key)
+        logger.debug(f"Removed {key} from read buffer")
                 
         time_function("release", start_time)
         return 0
 
     def link(self, target, name):
-        """Create hard link by copying the object (since true hard links aren't supported in object storage)."""
+        """
+        Create hard link by copying the object.
+        
+        This method creates a hard link by copying the object to a new key,
+        since true hard links aren't supported in object storage.
+        
+        Args:
+            target (str): Path to the target file
+            name (str): Path to the new link
+            
+        Returns:
+            int: 0 on success
+            
+        Raises:
+            FuseOSError: If the target file does not exist or an error occurs
+        """
         logger.info(f"link: target={target}, name={name}")
         start_time = time.time()
         
@@ -652,7 +729,19 @@ class ACSFuse(Operations):
             raise FuseOSError(errno.EIO)
 
     def flock(self, path, op, fh):
-        """File locking operation (implemented as a no-op since object storage doesn't support file locking)."""
+        """
+        File locking operation (implemented as a no-op).
+        
+        This method is a no-op since object storage doesn't support file locking.
+        
+        Args:
+            path (str): Path to the file
+            op (int): Lock operation
+            fh (int): File handle
+            
+        Returns:
+            int: 0 (always succeeds)
+        """
         logger.info(f"flock: {path}, op={op}")
         start_time = time.time()
         
@@ -661,39 +750,11 @@ class ACSFuse(Operations):
         time_function("flock", start_time)
         return 0
 
-def unmount(mountpoint):
-    """Unmount the filesystem using fusermount (Linux)."""
-    logger.info(f"Unmounting filesystem at {mountpoint}")
-    start_time = time.time()
-    
-    # Normalize mountpoint (remove trailing slash)
-    mountpoint = mountpoint.rstrip('/')
-    try:
-        # Check if the mountpoint is mounted
-        cp = subprocess.run(["mountpoint", "-q", mountpoint])
-        if cp.returncode != 0:
-            logger.warning(f"{mountpoint} is not mounted, nothing to unmount.")
-            print(f"{mountpoint} is not mounted, nothing to unmount.")
-            time_function("unmount", start_time)
-            return
-            
-        # Clear all caches before unmounting
-        fuse_ops = next((fuse for fuse in FUSE._active_fuseops if isinstance(fuse, ACSFuse)), None)
-        if fuse_ops:
-            fuse_ops.read_cache.clear()
-            logger.info("Cleared read cache")
-            
-        subprocess.run(["fusermount", "-u", mountpoint], check=True)
-        logger.info(f"Unmounted {mountpoint} gracefully.")
-        print(f"Unmounted {mountpoint} gracefully.")
-        time_function("unmount", start_time)
-    except Exception as e:
-        logger.error(f"Error during unmounting: {e}")
-        print(f"Error during unmounting: {e}")
-        time_function("unmount", start_time)
-
 def mount(bucket: str, mountpoint: str, foreground: bool = True):
-    """Mount an ACS bucket at the specified mountpoint.
+    """
+    Mount an ACS bucket at the specified mountpoint.
+    
+    This function mounts an ACS bucket as a local filesystem using FUSE.
     
     Args:
         bucket (str): Name of the bucket to mount
@@ -704,30 +765,10 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
     start_time = time.time()
     
     os.environ["GRPC_VERBOSITY"] = "ERROR"
-    options = {
-        'foreground': foreground,
-        'nonempty': True,
-        'debug': False,
-        'default_permissions': True,
-        'direct_io': False,  
-        'rw': True,
-        'big_writes': True,
-        'max_read': 1024 * 1024 * 1024,  # 1GB read size
-        'max_write': 1024 * 1024 * 1024,  # 1GB write size
-        'kernel_cache': True,  # Enable kernel caching
-        'auto_cache': True,   # Enable automatic cache management
-        'max_readahead': 1024 * 1024 * 1024,  # 1GB readahead
-    }
+    options = get_mount_options(foreground)
 
-    # Define a signal handler to catch SIGINT and SIGTERM
-    def signal_handler(sig, frame):
-        logger.info(f"Signal {sig} received, unmounting...")
-        print("Signal received, unmounting...")
-        unmount(mountpoint)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # Set up signal handlers for graceful unmounting
+    signal_handler = setup_signal_handlers(mountpoint, lambda mp: unmount(mp, ACSFuse))
 
     try:
         logger.info(f"Starting FUSE mount with options: {options}")
@@ -738,16 +779,24 @@ def mount(bucket: str, mountpoint: str, foreground: bool = True):
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received, unmounting...")
         print("Keyboard interrupt received, unmounting...")
-        unmount(mountpoint)
+        unmount(mountpoint, ACSFuse)
         time_function("mount", start_time)
     except Exception as e:
         logger.error(f"Error during mount: {e}")
         print(f"Error: {e}")
-        unmount(mountpoint)
+        unmount(mountpoint, ACSFuse)
         time_function("mount", start_time)
 
 def main():
-    """CLI entry point for mounting ACS buckets."""
+    """
+    CLI entry point for mounting ACS buckets.
+    
+    This function is the entry point for the command-line interface.
+    It parses command-line arguments and mounts the specified bucket.
+    
+    Usage:
+        python -m acs_sdk.fuse <bucket> <mountpoint>
+    """
     logger.info(f"Starting ACS FUSE CLI with arguments: {sys.argv}")
     start_time = time.time()
     

@@ -1,5 +1,15 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
-"""Module implementing the ACS client for Accelerated Cloud Storage using gRPC."""
+"""
+ACS Client Module.
+
+This module implements the client for Accelerated Cloud Storage (ACS) service using gRPC.
+It provides functionality for interacting with ACS buckets and objects, including
+creating, listing, and deleting buckets, as well as uploading, downloading, and
+managing objects within buckets.
+
+Classes:
+    ACSClient: Main client class for interacting with the ACS service.
+"""
 import os
 import yaml
 import grpc
@@ -16,7 +26,19 @@ from .exceptions import *
 
 class ACSClient:
     """
-    ACSClient is a client for the Accelerated Cloud Storage (ACS) service. It provides methods to interact with the ACS service, including creating, deleting, and listing buckets and objects, as well as uploading and downloading data.
+    Client for the Accelerated Cloud Storage (ACS) service.
+    
+    This class provides methods to interact with the ACS service, including creating,
+    deleting, and listing buckets and objects, as well as uploading and downloading data.
+    It handles authentication, connection management, and error handling.
+    
+    Attributes:
+        session (Session): Configuration for the client session.
+        channel (grpc.Channel): The gRPC channel for communication.
+        client (pb_grpc.ObjectStorageCacheStub): The gRPC client stub.
+        SERVER_ADDRESS (str): The server address for the ACS service.
+        BASE_CHUNK_SIZE (int): Base chunk size for streaming operations (64KB).
+        COMPRESSION_THRESHOLD (int): Threshold for compression (100MB).
     """
     
     # Constants 
@@ -25,13 +47,18 @@ class ACSClient:
     COMPRESSION_THRESHOLD = 100 * 1024 * 1024  # 100MB threshold for compression
 
     def __init__(self, session: Optional[Session] = None):
-        """Initialize the ACSClient.
-
-        Args:
-            session (Optional[Session], optional): Configuration for the client session. Defaults to None.
+        """
+        Initialize the ACSClient.
 
         Sets up a secure gRPC channel, loads credentials, authenticates,
         and checks for key rotation.
+
+        Args:
+            session (Optional[Session]): Configuration for the client session.
+                Defaults to None, which creates a default session.
+
+        Raises:
+            RuntimeError: If the CA certificate is not found.
         """
         # Store the session or create a default one
         self.session = session or Session()
@@ -78,7 +105,12 @@ class ACSClient:
         self._check_key_rotation(creds)
 
     def _setup_channel_connectivity(self):
-        """Setup channel connectivity monitoring and callbacks."""
+        """
+        Setup channel connectivity monitoring and callbacks.
+        
+        Configures the gRPC channel to monitor connectivity state changes
+        and attempt reconnection when failures occur.
+        """
         def _on_channel_state_change(state):
             if state == grpc.ChannelConnectivity.TRANSIENT_FAILURE:
                 self.channel.subscribe(lambda s: None, try_to_connect=True)
@@ -86,11 +118,16 @@ class ACSClient:
         self.channel.subscribe(_on_channel_state_change, try_to_connect=True)
 
     def close(self):
-        """Close the client."""
+        """
+        Close the client.
+        
+        Closes the gRPC channel and releases resources.
+        """
         self.channel.close()
 
     def _load_credentials(self) -> dict:
-        """Load credentials from ~/.acs/credentials.yaml.
+        """
+        Load credentials from ~/.acs/credentials.yaml.
 
         Creates the credentials file with default values if it does not exist.
 
@@ -127,10 +164,14 @@ class ACSClient:
         return profiles[profile]
 
     def _authenticate(self, creds: dict):
-        """Authenticate with the ACS service.
+        """
+        Authenticate with the ACS service.
 
         Args:
             creds (dict): The credentials containing access and secret keys.
+            
+        Raises:
+            grpc.RpcError: If authentication fails.
         """
         request = pb.AuthRequest(
             access_key_id=creds['access_key_id'],
@@ -140,7 +181,8 @@ class ACSClient:
         self.client.Authenticate(request)
 
     def _check_key_rotation(self, creds: dict):
-        """Check and perform key rotation if necessary.
+        """
+        Check and perform key rotation if necessary.
 
         Args:
             creds (dict): The credentials used for authentication.
@@ -152,7 +194,8 @@ class ACSClient:
 
     @retry()
     def create_bucket(self, bucket: str) -> None:
-        """Create a new bucket.
+        """
+        Create a new bucket.
 
         Args:
             bucket (str): The bucket name.
@@ -168,20 +211,28 @@ class ACSClient:
 
     @retry()
     def delete_bucket(self, bucket: str) -> None:
-        """Delete a bucket.
+        """
+        Delete a bucket.
 
         Args:
             bucket (str): The bucket name.
+            
+        Raises:
+            BucketError: If bucket deletion fails.
         """
         request = pb.DeleteBucketRequest(bucket=bucket)
         self.client.DeleteBucket(request)
 
     @retry()
     def list_buckets(self) -> List[pb.Bucket]:
-        """List all buckets.
+        """
+        List all buckets.
 
         Returns:
             List[pb.Bucket]: A list of buckets.
+            
+        Raises:
+            ACSError: If listing buckets fails.
         """
         request = pb.ListBucketsRequest()
         response = self.client.ListBuckets(request)
@@ -189,12 +240,16 @@ class ACSClient:
 
     @retry()
     def put_object(self, bucket: str, key: str, data: bytes) -> None:
-        """Upload data to a bucket with optional compression.
+        """
+        Upload data to a bucket with optional compression.
 
         Args:
             bucket (str): The bucket name.
             key (str): The object key.
             data (bytes): The data to upload.
+            
+        Raises:
+            ObjectError: If object upload fails.
         """
         is_compressed = False
         if len(data) >= self.COMPRESSION_THRESHOLD:
@@ -233,12 +288,14 @@ class ACSClient:
 
     @retry()
     def get_object(self, bucket: str, key: str, byte_range: Optional[str] = None) -> bytes:
-        """Download an object from a bucket.
+        """
+        Download an object from a bucket.
 
         Args:
             bucket (str): The bucket name.
             key (str): The object key.
-            byte_range (Optional[str], optional): Byte range to download (e.g. "0-1023"). Defaults to None.
+            byte_range (Optional[str]): Byte range to download (e.g. "0-1023").
+                Defaults to None.
 
         Returns:
             bytes: The downloaded object data.
@@ -313,7 +370,8 @@ class ACSClient:
 
     @retry()
     def delete_object(self, bucket: str, key: str) -> None:
-        """Delete a single object from a bucket.
+        """
+        Delete a single object from a bucket.
 
         Args:
             bucket (str): The bucket name.
@@ -330,7 +388,8 @@ class ACSClient:
 
     @retry()
     def delete_objects(self, bucket: str, keys: List[str]) -> None:
-        """Delete multiple objects from a bucket.
+        """
+        Delete multiple objects from a bucket.
 
         Args:
             bucket (str): The bucket name.
@@ -351,7 +410,8 @@ class ACSClient:
     
     @retry()
     def head_object(self, bucket: str, key: str) -> HeadObjectOutput:
-        """Retrieve metadata for an object without downloading it.
+        """
+        Retrieve metadata for an object without downloading it.
 
         Args:
             bucket (str): The bucket name.
@@ -390,11 +450,13 @@ class ACSClient:
     
     @retry()
     def list_objects(self, bucket: str, options: Optional[ListObjectsOptions] = None) -> Iterator[str]:
-        """List objects in a bucket with optional filtering.
+        """
+        List objects in a bucket with optional filtering.
 
         Args:
             bucket (str): The bucket name.
-            options (Optional[ListObjectsOptions], optional): Filtering options.
+            options (Optional[ListObjectsOptions]): Filtering options.
+                Defaults to None.
 
         Yields:
             Iterator[str]: Object keys.
@@ -434,7 +496,8 @@ class ACSClient:
     
     @retry()
     def copy_object(self, bucket: str, copy_source: str, key: str) -> None:
-        """Copy an object within or between buckets.
+        """
+        Copy an object within or between buckets.
 
         Args:
             bucket (str): The destination bucket name.
@@ -456,7 +519,8 @@ class ACSClient:
     
     @retry()
     def head_bucket(self, bucket: str) -> HeadBucketOutput:
-        """Retrieve metadata for a bucket.
+        """
+        Retrieve metadata for a bucket.
 
         Args:
             bucket (str): The bucket name.
@@ -476,10 +540,12 @@ class ACSClient:
 
     @retry()
     def rotate_key(self, force: bool = False) -> None:
-        """Rotate access keys.
+        """
+        Rotate access keys.
 
         Args:
-            force (bool, optional): Whether to force key rotation even if not needed.
+            force (bool): Whether to force key rotation even if not needed.
+                Defaults to False.
 
         Raises:
             ConfigurationError: If key rotation fails.
@@ -498,7 +564,8 @@ class ACSClient:
             raise ConfigurationError(f"Failed to rotate key: {e.details()}") from e
 
     def _update_credentials(self, new_secret_key: str) -> None:
-        """Update the stored credentials with a new secret key.
+        """
+        Update the stored credentials with a new secret key.
 
         Args:
             new_secret_key (str): The new secret access key.
@@ -516,7 +583,8 @@ class ACSClient:
 
     @retry()
     def share_bucket(self, bucket: str) -> None:
-        """Share a bucket with the ACS service.
+        """
+        Share a bucket with the ACS service.
 
         Args:
             bucket (str): The bucket name.

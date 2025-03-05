@@ -21,7 +21,7 @@ def main():
             return
 
         # Read and upload a large file with compression
-        # Create a large file for upload before the test
+        # Create a large file for upload
         test_data = b"Sample data for large file upload." * 1024  # Adjust size as needed
         try:
             with open("large_file.dat", "wb") as f:
@@ -32,7 +32,7 @@ def main():
                 data = f.read()
                 client.put_object(bucket, "large_file.dat", data)
         finally:
-            # Delete the file after the test
+            # Delete the file afterwards 
             if os.path.exists("large_file.dat"):
                 os.remove("large_file.dat")
 

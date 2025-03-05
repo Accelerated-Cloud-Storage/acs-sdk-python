@@ -1,5 +1,20 @@
-# Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
-# Make sure to run the python -m acs_sdk.fuse.fuse_mount <bucket> <mountpoint> command in a different terminal before running the script.
+# Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved
+'''
+This example demonstrates how to use the ACS FUSE filesystem to read and write files to an ACS bucket.
+
+To run this example, you need to have the ACS FUSE filesystem mounted on your system.
+
+# Create a mount point
+mkdir -p /mnt/acs-bucket
+
+# Mount the bucket
+python -m acs_sdk.fuse my-bucket /mnt/acs-bucket
+
+# Now you can work with the files as if they were local
+ls /mnt/acs-bucket
+cat /mnt/acs-bucket/example.txt
+
+'''
 import sys
 import os
 
