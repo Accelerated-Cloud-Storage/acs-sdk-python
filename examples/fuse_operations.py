@@ -2,17 +2,59 @@
 '''
 This example demonstrates how to use the ACS FUSE filesystem to read and write files to an ACS bucket.
 
-To run this example, you need to have the ACS FUSE filesystem mounted on your system.
+This module serves as the entry point when the acs_sdk.fuse package is executed
+directly using the -m flag (e.g., python -m acs_sdk.fuse).
 
-# Create a mount point
-mkdir -p /mnt/acs-bucket
+It provides a command-line interface for mounting ACS buckets as local filesystems.
 
-# Mount the bucket
-python -m acs_sdk.fuse my-bucket /mnt/acs-bucket
+Setup:
+    # Install the ACS SDK package
+    pip install acs-sdk
 
-# Now you can work with the files as if they were local
-ls /mnt/acs-bucket
-cat /mnt/acs-bucket/example.txt
+    # Install FUSE on your system
+    # On Ubuntu/Debian:
+    sudo apt-get install fuse
+
+    # On CentOS/RHEL:
+    sudo yum install fuse
+
+    # On macOS (using Homebrew):
+    brew install macfuse
+
+    # Configure ACS credentials
+    # Create ~/.acs/credentials.yaml with:
+    # default:
+    #   access_key_id: your_access_key_id
+    #   secret_access_key: your_secret_access_key
+
+    # Create a mount point
+    mkdir -p /mnt/acs-bucket
+
+Usage:
+    # Mount a bucket
+    python -m acs_sdk.fuse <bucket> <mountpoint>
+
+    # Example
+    python -m acs_sdk.fuse my-bucket /mnt/acs-bucket
+
+    # Unmount when done
+    # On Linux
+    fusermount -u /mnt/acs-bucket
+
+    # On macOS
+    umount /mnt/acs-bucket
+
+Troubleshooting:
+    # Enable debug logging
+    export ACS_LOG_LEVEL=DEBUG
+    python -m acs_sdk.fuse <bucket> <mountpoint>
+
+    # Run with sudo if permission issues occur
+    sudo python -m acs_sdk.fuse <bucket> <mountpoint>
+
+    # Check if FUSE is properly installed
+    which fusermount  # Linux
+    which mount_macfuse  # macOS
 
 '''
 import sys

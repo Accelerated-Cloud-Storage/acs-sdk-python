@@ -141,6 +141,8 @@
     * [truncate](#fuse.buffer.WriteBuffer.truncate)
     * [remove](#fuse.buffer.WriteBuffer.remove)
     * [has\_buffer](#fuse.buffer.WriteBuffer.has_buffer)
+* [fuse.\_\_main\_\_](#fuse.__main__)
+  * [main](#fuse.__main__.main)
 
 <a id="client"></a>
 
@@ -200,6 +202,14 @@ managing objects within buckets.
 Classes:
     ACSClient: Main client class for interacting with the ACS service.
 
+<a id="client.client.*"></a>
+
+## \*
+
+<a id="client.client.*"></a>
+
+## \*
+
 <a id="client.client.ACSClient"></a>
 
 ## ACSClient Objects
@@ -219,6 +229,9 @@ It handles authentication, connection management, and error handling.
 - `session` _Session_ - Configuration for the client session.
 - `channel` _grpc.Channel_ - The gRPC channel for communication.
 - `client` _pb_grpc.ObjectStorageCacheStub_ - The gRPC client stub.
+- `SERVER_ADDRESS` _str_ - The server address for the ACS service.
+- `BASE_CHUNK_SIZE` _int_ - Base chunk size for streaming operations (64KB).
+- `COMPRESSION_THRESHOLD` _int_ - Threshold for compression (100MB).
 
 <a id="client.client.ACSClient.SERVER_ADDRESS"></a>
 
@@ -929,6 +942,17 @@ This module provides the core FUSE implementation for mounting ACS buckets
 as local filesystems. It handles file operations like read, write, create,
 and delete by translating them to ACS API calls.
 
+Usage:
+    # Create a mount point
+    mkdir -p /mnt/acs-bucket
+
+    # Mount the bucket
+    python -m acs_sdk.fuse my-bucket /mnt/acs-bucket
+
+    # Now you can work with the files as if they were local
+    ls /mnt/acs-bucket
+    cat /mnt/acs-bucket/example.txt
+
 <a id="fuse.fuse_mount.FUSE"></a>
 
 ## FUSE
@@ -1019,16 +1043,6 @@ This class implements the FUSE operations interface to provide
 filesystem access to ACS buckets. It handles file operations by
 translating them to ACS API calls and manages buffers for efficient
 read and write operations.
-
-# Create a mount point
-mkdir -p /mnt/acs-bucket
-
-# Mount the bucket
-python -m acs_sdk.fuse my-bucket /mnt/acs-bucket
-
-# Now you can work with the files as if they were local
-ls /mnt/acs-bucket
-cat /mnt/acs-bucket/example.txt
 
 **Attributes**:
 
@@ -1835,4 +1849,68 @@ Check if a buffer exists for the specified key.
 **Returns**:
 
 - `bool` - True if a buffer exists, False otherwise
+
+<a id="fuse.__main__"></a>
+
+# Module fuse.\_\_main\_\_
+
+ACS FUSE Main Entry Point.
+
+This module serves as the entry point when the acs_sdk.fuse package is executed
+directly using the -m flag (e.g., python -m acs_sdk.fuse).
+
+It provides a command-line interface for mounting ACS buckets as local filesystems.
+
+Setup:
+    # Install the ACS SDK package
+    pip install acs-sdk
+
+    # Install FUSE on your system
+    # On Ubuntu/Debian:
+    sudo apt-get install fuse
+
+    # On CentOS/RHEL:
+    sudo yum install fuse
+
+    # On macOS (using Homebrew):
+    brew install macfuse
+
+    # Configure ACS credentials
+    # Create ~/.acs/credentials.yaml with:
+    # default:
+    #   access_key_id: your_access_key_id
+    #   secret_access_key: your_secret_access_key
+
+    # Create a mount point
+    mkdir -p /mnt/acs-bucket
+
+Usage:
+    # Mount a bucket
+    python -m acs_sdk.fuse <bucket> <mountpoint>
+
+    # Example
+    python -m acs_sdk.fuse my-bucket /mnt/acs-bucket
+
+    # Unmount when done
+    # On Linux
+    fusermount -u /mnt/acs-bucket
+
+    # On macOS
+    umount /mnt/acs-bucket
+
+Troubleshooting:
+    # Enable debug logging
+    export ACS_LOG_LEVEL=DEBUG
+    python -m acs_sdk.fuse <bucket> <mountpoint>
+
+    # Run with sudo if permission issues occur
+    sudo python -m acs_sdk.fuse <bucket> <mountpoint>
+
+    # Check if FUSE is properly installed
+    which fusermount  # Linux
+    which mount_macfuse  # macOS
+
+<a id="fuse.__main__.main"></a>
+
+## main
 
