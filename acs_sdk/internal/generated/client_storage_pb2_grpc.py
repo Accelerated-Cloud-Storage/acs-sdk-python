@@ -3,6 +3,7 @@
 import grpc
 import warnings
 
+# Fix the import path to use relative import instead of absolute import
 from . import client_storage_pb2 as client__storage__pb2
 
 GRPC_GENERATED_VERSION = '1.70.0'

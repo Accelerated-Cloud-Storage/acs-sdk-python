@@ -1,6 +1,6 @@
 loaders:
   - type: python
-    search_path: ['./acs_sdk/client']
+    search_path: ['./acs_sdk']
 processors:
   - type: filter 
     # Add expression to exclude imported modules

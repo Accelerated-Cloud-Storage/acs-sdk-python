@@ -3,7 +3,7 @@ The Python SDK for Accelerated Cloud Storage's Object Storage offering.
 
 `acs-sdk-python` is the ACS SDK for the Python programming language.
 
-The SDK requires a minimum version of Python 3.10.
+The SDK requires a minimum version of Python 3.9.
 
 Check out the [Release Notes] for information about the latest bug fixes, updates, and features added to the SDK.
 

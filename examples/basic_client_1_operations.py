@@ -1,16 +1,19 @@
 # Copyright 2025 Accelerated Cloud Storage Corporation. All Rights Reserved.
-from acs_sdk.client import ACSClient
+from acs_sdk import ACSClient, Session
 import time
 import uuid
 
 def main():
-    # Create a new client
-    client = ACSClient()
+    # Create a session with a specific region
+    session = Session(region="us-east-1")
+    
+    # Create a new client with the session
+    client = ACSClient(session=session)
 
     try:
         # Create a bucket
         bucket = f"my-test-bucket-{uuid.uuid4()}"
-        client.create_bucket(bucket, "us-east-1")
+        client.create_bucket(bucket)
         print("Created bucket: my-test-bucket")
 
         # Upload an object
