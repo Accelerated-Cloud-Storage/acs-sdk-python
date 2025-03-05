@@ -3,6 +3,7 @@
 """Example demonstrating the use of Session with ACSClient."""
 
 from acs_sdk import ACSClient, Session
+import uuid
 
 def main():
     # Create a session with a specific region
@@ -20,7 +21,7 @@ def main():
             print(f"  - {bucket.name}")
         
         # Create a new bucket
-        bucket_name = "example-bucket"
+        bucket_name = f"my-test-bucket-{uuid.uuid4()}"
         print(f"\nCreating bucket: {bucket_name}")
         client.create_bucket(bucket_name)
         
