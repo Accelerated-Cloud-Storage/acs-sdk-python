@@ -14,28 +14,31 @@ Jump To:
 ## Getting started
 [![Python](https://img.shields.io/badge/pypi-blue)](https://pypi.org/project/acs-sdk) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)](https://github.com/AcceleratedCloudStorage/acs-sdk-python/blob/main/docs/API.md) [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales)
 
-#### Setup credientials 
-Downloading your credentials from the console on the [website](https://acceleratedcloudstorage.com).
+#### Get credientials
+
+Get your credentials and setup payments from the console on the [website](https://acceleratedcloudstorage.io).
 
 Next, set up credentials (in e.g. ``~/.acs/credentials``):
+
 ```
 default:
     access_key_id = YOUR_KEY
     secret_access_key = YOUR_SECRET
 ```
-Note: You can include multiple profiles and set them using the ACS_PROFILE environment variable. 
+
+Note: You can include multiple profiles and set them using the ACS_PROFILE environment variable. See the examples/config folder for a sample file.
 
 #### Initialize project
 Assuming that you have a supported version of Python installed, you can first set up your environment with:
 ```python
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 ```
 Then, you can install acs from PyPI with:
 ```python
 python -m pip install acs-sdk
 ```
-Or you can install it from source (preferred)
+Or you can install it from source (preferred option)
 ```
 $ git clone https://github.com/AcceleratedCloudStorage/acs-sdk-python
 $ python -m pip install -r requirements.txt

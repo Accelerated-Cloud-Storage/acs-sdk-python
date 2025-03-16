@@ -1881,8 +1881,9 @@ Setup:
     #   access_key_id: your_access_key_id
     #   secret_access_key: your_secret_access_key
 
-    # Create a mount point
+    # Create a mount point with permissions
     mkdir -p /mnt/acs-bucket
+    chown ec2-user:ec2-user /mnt/acs-bucket
 
 Usage:
     # Mount a bucket
@@ -1894,21 +1895,20 @@ Usage:
     # Unmount when done
     # On Linux
     fusermount -u /mnt/acs-bucket
-
     # On macOS
     umount /mnt/acs-bucket
 
 Troubleshooting:
-    # Enable debug logging
-    export ACS_LOG_LEVEL=DEBUG
-    python -m acs_sdk.fuse <bucket> <mountpoint>
-
-    # Run with sudo if permission issues occur
-    sudo python -m acs_sdk.fuse <bucket> <mountpoint>
+    # Create mount point with sudo
+    sudo mkdir -p /mnt/acs-bucket
+    sudo chown ec2-user:ec2-user /mnt/acs-bucket
 
     # Check if FUSE is properly installed
     which fusermount  # Linux
     which mount_macfuse  # macOS
+
+    # Check mount permissions 
+    ls -ld /mnt/acs-bucket
 
 <a id="fuse.__main__.main"></a>
 
