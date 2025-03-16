@@ -1,4 +1,4 @@
-# v0.3.1 (2025-03-04)
+# v0.3.1 (2025-03-16)
 
 * **Feature**: Improved the documentation. 
 * **Dependency Update**: Updated to the latest SDK module versions.
