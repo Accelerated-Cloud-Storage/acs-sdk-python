@@ -11,6 +11,13 @@ Jump To:
 * [Getting Started](#getting-started)
 * [Getting Help](#getting-help)
 
+### Python version support policy
+
+The SDK follows a release policy of an additional six months of support for the most recently deprecated language version.
+
+**ACS reserves the right to drop support for unsupported Python versions earlier to
+address critical security issues.**
+
 ## Getting started
 [![Website](https://img.shields.io/badge/Website-Console-blue)](https://acceleratedcloudstorage.io) [![Python](https://img.shields.io/badge/pypi-blue)](https://pypi.org/project/acs-sdk) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)](https://github.com/AcceleratedCloudStorage/acs-sdk-python/blob/main/docs/API.md) [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales)
 
@@ -45,7 +52,7 @@ $ python -m pip install -r requirements.txt
 $ python -m pip install -e .
 ```
 #### Write Code
-You can either use the client or a FUSE mount. Check out the example folder or the docs folder for more details. 
+You can either use the client for an interface similar to the AWS SDK or a FUSE mount for a file system interface. Check out the example folder or the docs folder for more details. 
 
 ## Share bucket 
 You can also bring your existing buckets into the service by setting a bucket policy and then sharing the bucket with the service. 
