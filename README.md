@@ -12,7 +12,7 @@ Jump To:
 * [Getting Help](#getting-help)
 
 ## Getting started
-[![Python](https://img.shields.io/badge/pypi-blue)](https://pypi.org/project/acs-sdk) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)](https://github.com/AcceleratedCloudStorage/acs-sdk-python/blob/main/docs/API.md) [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales)
+[![Website](https://img.shields.io/badge/Website-Console-blue)](https://acceleratedcloudstorage.io) [![Python](https://img.shields.io/badge/pypi-blue)](https://pypi.org/project/acs-sdk) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)](https://github.com/AcceleratedCloudStorage/acs-sdk-python/blob/main/docs/API.md) [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales)
 
 #### Get credientials
 
@@ -46,6 +46,40 @@ $ python -m pip install -e .
 ```
 #### Write Code
 You can either use the client or a FUSE mount. Check out the example folder or the docs folder for more details. 
+
+## Share bucket 
+You can also bring your existing buckets into the service by setting a bucket policy and then sharing the bucket with the service. 
+
+### Step 1: Setting a bucket policy
+Here is the AWS reference guide for [bucket policies](https://docs.aws.amazon.com/AmazonS3/latest/userguide/add-bucket-policy.html). You can set the following bucket policy through the AWS Console or SDK to enable ACS to access it. 
+```
+{
+"Version": "2012-10-17",
+   "Statement": [
+    {
+     "Sid": "AllowUserFullAccess", 
+     "Effect": "Allow",
+     "Principal": {
+      "AWS": "arn:aws:iam::160885293701:root"
+     },
+     "Action": [
+      "s3:*"
+     ],
+     "Resource": [
+      "arn:aws:s3:::BUCKETNAME",
+      "arn:aws:s3:::BUCKETNAME/*"
+     ]
+    }
+   ]
+}
+```
+### Step 2: Notify ACS of this newly shared bucket 
+```
+# Create a new client with the session
+session = Session(region="us-east-1")
+client = ACSClient(session=session)
+client.share_bucket("BUCKETNAME")
+```
 
 ## Getting Help
 
