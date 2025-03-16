@@ -45,7 +45,7 @@ $ python -m pip install -r requirements.txt
 $ python -m pip install -e .
 ```
 #### Write Code
-You can either use the client or a FUSE mount. Check out the example folder and the docs folder for more details. 
+You can either use the client or a FUSE mount. Check out the example folder or the docs folder for more details. 
 
 ## Getting Help
 
