@@ -21,7 +21,7 @@ address critical security issues.**
 ## Getting started
 [![Website](https://img.shields.io/badge/Website-Console-blue)](https://acceleratedcloudstorage.io) [![Python](https://img.shields.io/badge/pypi-blue)](https://pypi.org/project/acs-sdk) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)](https://github.com/AcceleratedCloudStorage/acs-sdk-python/blob/main/docs/API.md) [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales)
 
-#### Get credientials
+#### Get credentials
 
 Get your credentials and setup payments from the console on the [website](https://acceleratedcloudstorage.io).
 
