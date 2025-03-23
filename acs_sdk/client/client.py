@@ -42,7 +42,7 @@ class ACSClient:
     """
     
     # Constants 
-    SERVER_ADDRESS = "acceleratedcloudstorages3cache.com:50050"
+    SERVER_ADDRESS = "acceleratedcloudstorageproduction.com:50050"
     BASE_CHUNK_SIZE = 64 * 1024  # 64KB base chunk size for streaming
     COMPRESSION_THRESHOLD = 100 * 1024 * 1024  # 100MB threshold for compression
 
