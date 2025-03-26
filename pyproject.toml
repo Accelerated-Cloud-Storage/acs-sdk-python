@@ -1,6 +1,6 @@
 [project]
 name = "acs-sdk"
-version = "0.3.1"
+version = "0.3.2"
 description = "Python SDK for Accelerated Cloud Storage service"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -49,7 +49,8 @@ packages = [
     "acs_sdk",
     "acs_sdk.client",
     "acs_sdk.internal",
-    "acs_sdk.internal.generated"
+    "acs_sdk.internal.generated",
+    "acs_sdk.fuse"
 ]
 
 [tool.setuptools.package-data]
