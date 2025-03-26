@@ -51,8 +51,9 @@ $ git clone https://github.com/AcceleratedCloudStorage/acs-sdk-python
 $ python -m pip install -r requirements.txt
 $ python -m pip install -e .
 ```
+
 #### Write Code
-You can either use the client for an interface similar to the AWS SDK or a FUSE mount for a file system interface. Check out the example folder or the docs folder for more details. 
+You can either use the client for an interface similar to the AWS SDK or a FUSE mount for a file system interface. Check out the example folder or the docs folder for more details. Please refer to our benchmarks repository for comparisions against other vendors. 
 
 ## Share bucket 
 You can also bring your existing buckets into the service by setting a bucket policy and then sharing the bucket with the service. 
