@@ -49,7 +49,8 @@ packages = [
     "acs_sdk",
     "acs_sdk.client",
     "acs_sdk.internal",
-    "acs_sdk.internal.generated"
+    "acs_sdk.internal.generated",
+    "acs_sdk.fuse"
 ]
 
 [tool.setuptools.package-data]
