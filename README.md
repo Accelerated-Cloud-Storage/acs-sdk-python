@@ -19,7 +19,7 @@ The SDK follows a release policy of an additional six months of support for the 
 address critical security issues.**
 
 ## Getting started
-[![Website](https://img.shields.io/badge/Website-Console-blue)](https://acceleratedcloudstorage.io) [![Python](https://img.shields.io/badge/pypi-blue)](https://pypi.org/project/acs-sdk) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)](https://github.com/AcceleratedCloudStorage/acs-sdk-python/blob/main/docs/API.md) [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales)
+[![Website](https://img.shields.io/badge/Website-Console-blue)](https://acceleratedcloudstorage.com) [![Python](https://img.shields.io/badge/pypi-blue)](https://pypi.org/project/acs-sdk) [![API Reference](https://img.shields.io/badge/API-Reference-blue.svg)](https://github.com/AcceleratedCloudStorage/acs-sdk-python/blob/main/docs/API.md) [![Demo](https://img.shields.io/badge/Demo-Videos-blue.svg)](https://www.youtube.com/@AcceleratedCloudStorageSales)
 
 #### Get credentials
 
