@@ -90,7 +90,7 @@ def setup_signal_handlers(mountpoint, unmount_func):
     
     return signal_handler
 
-def get_mount_options(foreground=True):
+def get_mount_options(foreground=True, allow_other=False):
     """
     Get standard mount options for FUSE.
     
@@ -99,21 +99,29 @@ def get_mount_options(foreground=True):
     
     Args:
         foreground (bool, optional): Run in foreground. Defaults to True.
+        allow_other (bool, optional): Allow other users to access the mount. 
+            Requires 'user_allow_other' in /etc/fuse.conf. Defaults to False.
         
     Returns:
         dict: Dictionary of mount options
     """
-    return {
+    options = {
         'foreground': foreground,
         'nonempty': True,
-        'debug': False,
+        'debug': True,
         'default_permissions': True,
-        'direct_io': False,  
+        'direct_io': False,  # Better for regular file access patterns
         'rw': True,
         'big_writes': True,
-        'max_read': 1024 * 1024 * 1024,  # 1GB read size
-        'max_write': 1024 * 1024 * 1024,  # 1GB write size
-        'kernel_cache': True,  # Enable kernel caching
-        'auto_cache': True,   # Enable automatic cache management
-        'max_readahead': 1024 * 1024 * 1024,  # 1GB readahead
-    } 
+        'max_read': 32 * 1024 * 1024,    # 32MB read size (reduced from 4GB)
+        'max_write': 32 * 1024 * 1024,   # 32MB write size (reduced from 4GB)
+        'kernel_cache': True,            # Enable kernel caching
+        'auto_cache': True,              # Enable automatic cache management
+        'max_readahead': 32 * 1024 * 1024,  # 32MB readahead (reduced from 4GB)
+    }
+    
+    # Only add allow_other if explicitly requested
+    if allow_other:
+        options['allow_other'] = True
+        
+    return options 

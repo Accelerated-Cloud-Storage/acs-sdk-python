@@ -11,10 +11,11 @@ import time
 
 # Configure logging
 logging.basicConfig(
-    level=logging.ERROR,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s] - %(message)s'
 )
 logger = logging.getLogger('ACSFuse')
+logger.setLevel(logging.DEBUG)
 
 def time_function(func_name, start_time):
     """
