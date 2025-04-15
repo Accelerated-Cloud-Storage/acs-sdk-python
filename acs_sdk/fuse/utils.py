@@ -8,6 +8,10 @@ for the ACS FUSE filesystem implementation.
 
 import logging
 import time
+import os
+
+# Enable a debug trace for all file operations if requested
+TRACE_OPERATIONS = os.environ.get('ACS_FUSE_TRACE_OPS', '').lower() in ('true', '1', 'yes')
 
 # Configure logging
 logging.basicConfig(
@@ -33,3 +37,19 @@ def time_function(func_name, start_time):
     elapsed = time.time() - start_time
     logger.info(f"{func_name} completed in {elapsed:.4f} seconds")
     return elapsed 
+
+def trace_op(operation, path, **details):
+    """
+    Trace a file operation for debugging purposes.
+    
+    This function logs detailed information about file operations
+    when the ACS_FUSE_TRACE_OPS environment variable is set.
+    
+    Args:
+        operation (str): The file operation being performed
+        path (str): The path of the file being operated on
+        **details: Additional details to log
+    """
+    if TRACE_OPERATIONS:
+        detail_str = ', '.join(f"{k}={v}" for k, v in details.items())
+        logger.debug(f"TRACE: {operation} on {path} {detail_str}") 

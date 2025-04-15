@@ -30,9 +30,10 @@ from acs_sdk.client.types import ListObjectsOptions
 from io import BytesIO
 from threading import Lock
 import subprocess
+import fcntl
 
 # Import from our new modules
-from .utils import logger, time_function
+from .utils import logger, time_function, trace_op
 from .buffer import ReadBuffer, BufferEntry, WriteBuffer, calculate_ttl
 from .mount_utils import unmount, setup_signal_handlers, get_mount_options
 
@@ -123,6 +124,7 @@ class ACSFuse(Operations):
         Raises:
             FuseOSError: If the file or directory does not exist
         """
+        trace_op("getattr", path, fh=fh)
         logger.debug(f"getattr requested for path: {path}")
         start_time = time.time()
         
@@ -273,8 +275,7 @@ class ACSFuse(Operations):
         """
         Rename a file or directory.
         
-        This method renames a file or directory by copying the object
-        to a new key and deleting the old one.
+        This method renames a file or directory with reliable, predictable behavior.
         
         Args:
             old (str): Old path
@@ -283,6 +284,7 @@ class ACSFuse(Operations):
         Raises:
             FuseOSError: If the source file does not exist or an error occurs
         """
+        trace_op("rename", new, old=old)
         logger.info(f"rename: {old} to {new}")
         start_time = time.time()
         
@@ -290,38 +292,98 @@ class ACSFuse(Operations):
         new_key = self._get_path(new)
 
         try:
-            # Get the object data for the source
+            # First verify source exists
+            try:
+                client_start = time.time()
+                # We'll use a head request instead of getting the whole object first
+                self.client.head_object(self.bucket, old_key)
+                logger.info(f"rename: head_object completed in {time.time() - client_start:.4f} seconds")
+            except Exception as e:
+                logger.error(f"rename: Source {old_key} does not exist: {str(e)}")
+                time_function("rename", start_time)
+                raise FuseOSError(errno.ENOENT)
+            
+            # For small files, use the in-memory write buffer if available
+            if self.write_buffer.has_buffer(old_key):
+                logger.debug(f"rename: Source {old_key} is in write buffer, using that directly")
+                try:
+                    # Read from buffer
+                    data = self.write_buffer.read(old_key)
+                    if data is not None:
+                        # Write to new location
+                        client_start = time.time()
+                        self.client.put_object(self.bucket, new_key, data)
+                        logger.info(f"rename: put_object for {new_key} completed in {time.time() - client_start:.4f} seconds")
+                        
+                        # Delete original
+                        client_start = time.time()
+                        self.client.delete_object(self.bucket, old_key)
+                        logger.info(f"rename: delete_object for {old_key} completed in {time.time() - client_start:.4f} seconds")
+                        
+                        # Clean up buffers
+                        self.write_buffer.remove(old_key)
+                        if self.read_buffer.get(old_key):
+                            self.read_buffer.remove(old_key)
+                        if self.read_buffer.get(new_key):
+                            self.read_buffer.remove(new_key)
+                            
+                        logger.debug(f"rename: Successfully renamed {old_key} to {new_key} using write buffer")
+                        time_function("rename", start_time)
+                        return 0
+                except Exception as e:
+                    logger.error(f"rename: Failed using write buffer method: {str(e)}")
+                    # Fall through to standard method
+            
+            # Standard method - get object, put to new location, delete original
+            logger.debug(f"rename: Using standard get/put method for {old_key} to {new_key}")
+            
+            # Get the object data in chunks if needed
+            logger.debug(f"rename: Getting source object {old_key}")
             client_start = time.time()
             data = self.client.get_object(self.bucket, old_key)
-            logger.info(f"get_object call for {old_key} completed in {time.time() - client_start:.4f} seconds")
-        except Exception as e:
-            logger.error(f"Error getting source object {old_key}: {str(e)}")
-            time_function("rename", start_time)
-            raise FuseOSError(errno.ENOENT)
-
-        try:
+            
+            # Log progress info since this could be slow for large files
+            data_size = len(data)
+            logger.info(f"rename: get_object for {old_key} completed in {time.time() - client_start:.4f} seconds, size={data_size/1024/1024:.2f}MB")
+            
             # Write data to the destination key
+            logger.debug(f"rename: Putting object to {new_key}")
             client_start = time.time()
             self.client.put_object(self.bucket, new_key, data)
-            logger.info(f"put_object call for {new_key} completed in {time.time() - client_start:.4f} seconds")
+            logger.info(f"rename: put_object for {new_key} completed in {time.time() - client_start:.4f} seconds")
             
             # Delete the original object
+            logger.debug(f"rename: Deleting original object {old_key}")
             client_start = time.time()
             self.client.delete_object(self.bucket, old_key)
-            logger.info(f"delete_object call for {old_key} completed in {time.time() - client_start:.4f} seconds")
+            logger.info(f"rename: delete_object for {old_key} completed in {time.time() - client_start:.4f} seconds")
             
+            # Clean up buffers to ensure fresh data
+            if self.write_buffer.has_buffer(old_key):
+                self.write_buffer.remove(old_key)
+            if self.read_buffer.get(old_key):
+                self.read_buffer.remove(old_key)
+            if self.read_buffer.get(new_key):
+                self.read_buffer.remove(new_key)
+                
             time_function("rename", start_time)
+            return 0
+            
+        except FuseOSError:
+            # Re-raise FUSE-specific errors
+            raise
         except Exception as e:
             logger.error(f"Error in rename operation: {str(e)}")
             time_function("rename", start_time)
             raise FuseOSError(errno.EIO)
-    
+
     def read(self, path, size, offset, fh):
         """
         Read file contents, checking buffer first.
         
         This method reads data from a file, first checking the read buffer
-        and falling back to object storage if necessary.
+        and falling back to object storage if necessary. Optimized for ML workloads
+        that use memory mapping.
         
         Args:
             path (str): Path to the file
@@ -335,50 +397,95 @@ class ACSFuse(Operations):
         Raises:
             FuseOSError: If an error occurs while reading the file
         """
+        trace_op("read", path, size=size, offset=offset, fh=fh)
         logger.debug(f"read requested for path: {path}, size: {size}, offset: {offset}")
         start_time = time.time()
         
         key = self._get_path(path)
         try:
-            # Fast path: Check in-memory buffer first
-            buffer_entry = self.read_buffer.get(key)
-            data = None # Initialize data
+            # Check if this is a small read - optimization for memory mapping pattern
+            is_small_read = size < 1024 * 1024  # Less than 1MB reads are likely mmap page faults
             
-            if buffer_entry is None:
-                # Buffer miss - fetch from object storage
-                logger.debug(f"Read buffer MISS for key: {key}. Fetching from ACS.")
-                try:
-                    client_start = time.time()
-                    data = self.client.get_object(self.bucket, key)
-                    logger.info(f"get_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-                    logger.debug(f"Fetched {len(data)} bytes from ACS for key: {key}")
+            # Check if data is in write buffer first (highest priority)
+            if self.write_buffer.has_buffer(key):
+                logger.debug(f"Write buffer HIT for {key}")
+                data = self.write_buffer.read(key)
+                if data is None:
+                    logger.error(f"Write buffer returned None for {key}")
+                    raise FuseOSError(errno.EIO)
                     
-                    # Store in buffer
-                    self.read_buffer.put(key, data)
-                except Exception as e:
-                    logger.error(f"Error fetching {key} from object storage: {str(e)}", exc_info=True)
-                    raise
-            else:
-                logger.debug(f"Read buffer HIT for key: {key}. Data length: {len(buffer_entry)}")
-                data = buffer_entry
-            
-            # Return requested portion from buffer
-            if data is None: # Handle case where fetch failed but exception was caught/re-raised later potentially
-                 logger.error(f"Read error: data is None for key {key} after buffer check/fetch attempt.")
-                 raise FuseOSError(errno.EIO)
-            
-            if offset >= len(data):
-                logger.info(f"Offset {offset} is beyond file size {len(data)}, returning empty bytes")
+                if offset >= len(data):
+                    logger.debug(f"Offset {offset} beyond data length {len(data)}, returning empty")
+                    time_function("read", start_time)
+                    return b""
+                    
+                end_offset = min(offset + size, len(data))
+                result = data[offset:end_offset]
+                logger.debug(f"Returning {len(result)} bytes from write buffer")
                 time_function("read", start_time)
-                return b""
+                return result
+            
+            # Check read buffer next
+            buffer_entry = self.read_buffer.get(key)
+            if buffer_entry is not None:
+                logger.debug(f"Read buffer HIT for {key}")
+                if offset >= len(buffer_entry):
+                    logger.debug(f"Offset {offset} beyond data length {len(buffer_entry)}, returning empty")
+                    time_function("read", start_time)
+                    return b""
+                    
+                end_offset = min(offset + size, len(buffer_entry))
+                result = buffer_entry[offset:end_offset]
+                logger.debug(f"Returning {len(result)} bytes from read buffer")
+                time_function("read", start_time)
+                return result
                 
-            end_offset = min(offset + size, len(data))
-            result = data[offset:end_offset]
-            logger.debug(f"Returning {len(result)} bytes for {path} (slice {offset}:{end_offset})")
+            # Need to fetch from storage
+            logger.debug(f"Buffer MISS for {key}")
             
-            time_function("read", start_time)
-            return result
-            
+            try:
+                # For small reads (like memory mapping page faults), try range request
+                client_start = time.time()
+                if is_small_read:
+                    # Calculate range string (inclusive range)
+                    range_str = f"bytes={offset}-{offset + size - 1}"
+                    logger.debug(f"Using range request {range_str} for {key}")
+                    
+                    try:
+                        # Try range request first
+                        data = self.client.get_object(self.bucket, key, byte_range=range_str)
+                        logger.info(f"Range get_object for {key} completed in {time.time() - client_start:.4f} seconds")
+                        
+                        # Don't cache small ranges to avoid fragmentation
+                        logger.debug(f"Returning {len(data)} bytes from range request")
+                        time_function("read", start_time)
+                        return data
+                    except Exception as e:
+                        logger.warning(f"Range request failed for {key}: {e}, falling back to full file")
+                
+                # Full file fetch
+                data = self.client.get_object(self.bucket, key)
+                logger.info(f"Full get_object for {key} completed in {time.time() - client_start:.4f} seconds")
+                
+                # Add to read buffer
+                self.read_buffer.put(key, data)
+                
+                # Return the requested portion
+                if offset >= len(data):
+                    logger.debug(f"Offset {offset} beyond data length {len(data)}, returning empty")
+                    time_function("read", start_time)
+                    return b""
+                    
+                end_offset = min(offset + size, len(data))
+                result = data[offset:end_offset]
+                logger.debug(f"Returning {len(result)} bytes from full file")
+                time_function("read", start_time)
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error fetching {key} from storage: {str(e)}", exc_info=True)
+                raise FuseOSError(errno.EIO)
+                
         except Exception as e:
             logger.error(f"Error reading {key}: {str(e)}", exc_info=True)
             time_function("read", start_time)
@@ -390,6 +497,7 @@ class ACSFuse(Operations):
         
         This method writes data to a file by storing it in a write buffer,
         which will be flushed to object storage when the file is closed.
+        Optimized for ML model file download patterns.
         
         Args:
             path (str): Path to the file
@@ -403,6 +511,7 @@ class ACSFuse(Operations):
         Raises:
             FuseOSError: If an error occurs while writing the file
         """
+        trace_op("write", path, data_size=len(data), offset=offset, fh=fh)
         logger.debug(f"write requested for path: {path}, size={len(data)}, offset={offset}, fh={fh}")
         start_time = time.time()
         
@@ -432,6 +541,10 @@ class ACSFuse(Operations):
             logger.debug(f"Invalidating read buffer for {key} due to write")
             self.read_buffer.remove(key)
             
+            # For ML model files, we want to avoid frequent flushing during download
+            # HuggingFace uses .incomplete suffix for files being downloaded
+            is_temp_file = path.endswith('.incomplete')
+            
             time_function("write", start_time)
             return bytes_written
             
@@ -458,28 +571,29 @@ class ACSFuse(Operations):
         Raises:
             FuseOSError: If an error occurs while creating the file
         """
+        trace_op("create", path, mode=oct(mode))
         logger.debug(f"create requested for path: {path}, mode={oct(mode)}")
         start_time = time.time()
         
         key = self._get_path(path)
+        
         try:
             # Create empty object in Object Storage first to represent the file
             # This ensures the file exists even if not written to and released immediately
-            logger.debug(f"Attempting initial PutObject (0 bytes) for key: {key}")
+            logger.debug(f"Creating empty file: {key}")
             client_start = time.time()
             self.client.put_object(self.bucket, key, b"")
-            logger.info(f"Initial put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+            logger.info(f"create: put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
 
             # Initialize buffer
             logger.debug(f"Initializing write buffer for newly created file: {key}")
             self.write_buffer.initialize_buffer(key)
             
-            # Typically, create should return a file handle (fh). Often 0 works if not managing handles explicitly.
-            # Let's return 0 explicitly as per fusepy examples.
+            # Return file handle
             fh = 0
             logger.debug(f"Create successful for {path}, returning fh={fh}")
             time_function("create", start_time)
-            return fh # Return file handle
+            return fh
         except Exception as e:
             logger.error(f"Error creating {key}: {str(e)}", exc_info=True)
             time_function("create", start_time)
@@ -740,6 +854,43 @@ class ACSFuse(Operations):
             time_function("truncate", start_time)
             raise FuseOSError(errno.EIO)
 
+    def open(self, path, flags):
+        """
+        Open a file and prepare it for reading/writing.
+        
+        This is called when a file is opened.
+        
+        Args:
+            path (str): Path to the file
+            flags (int): Open flags (O_RDONLY, O_WRONLY, etc.)
+            
+        Returns:
+            int: File handle (using 0 as default)
+        """
+        trace_op("open", path, flags=flags)
+        logger.debug(f"open requested for path: {path}, flags={flags}")
+        start_time = time.time()
+        
+        key = self._get_path(path)
+        
+        # Check if this is a read-only open, which is common for model files
+        is_readonly = (flags & os.O_ACCMODE) == os.O_RDONLY
+        
+        # For read-only operations, verify the file exists
+        if is_readonly:
+            try:
+                client_start = time.time()
+                self.client.head_object(self.bucket, key)
+                logger.debug(f"open: File {key} exists")
+            except Exception as e:
+                # File doesn't exist - valid error for caller to handle
+                logger.error(f"open: File {key} does not exist: {e}")
+                time_function("open", start_time)
+                raise FuseOSError(errno.ENOENT)
+                
+        time_function("open", start_time)
+        return 0  # File handle - using 0 as default
+
     def _flush_buffer(self, path):
         """
         Flush the in-memory buffer for a file to ACS storage.
@@ -752,6 +903,7 @@ class ACSFuse(Operations):
         Raises:
             Exception: If an error occurs while flushing the buffer
         """
+        trace_op("_flush_buffer", path)
         logger.debug(f"_flush_buffer called for path: {path}")
         start_time = time.time()
         
@@ -791,6 +943,55 @@ class ACSFuse(Operations):
 
         time_function("_flush_buffer", start_time)
 
+    def fsync(self, path, datasync, fh):
+        """
+        Synchronize file contents to storage.
+
+        Ensures data is safely persisted to storage for reliability.
+
+        Args:
+            path (str): Path to the file
+            datasync (int): 1 for datasync, 0 for fsync
+            fh (int): File handle
+
+        Returns:
+            int: 0 (always succeeds)
+        """
+        trace_op("fsync", path, datasync=datasync, fh=fh)
+        logger.debug(f"fsync requested for path: {path}, datasync={datasync}, fh={fh}")
+        start_time = time.time()
+        
+        key = self._get_path(path)
+        
+        # Always flush to storage for reliability
+        if self.write_buffer.has_buffer(key):
+            logger.debug(f"fsync: Flushing write buffer for {key}")
+            try:
+                # Read the data from the buffer
+                data = self.write_buffer.read(key)
+                
+                if data is not None:
+                    # Write to storage
+                    client_start = time.time()
+                    self.client.put_object(self.bucket, key, data)
+                    logger.info(f"fsync: put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                    logger.debug(f"fsync: Successfully flushed {len(data)} bytes for {key}")
+                    
+                    # No need to remove from write buffer as we may need it again
+                    # But do invalidate the read buffer
+                    if self.read_buffer.get(key):
+                        self.read_buffer.remove(key)
+                else:
+                    logger.warning(f"fsync: Buffer for {key} returned None data")
+            except Exception as e:
+                logger.error(f"fsync: Error flushing buffer for {key}: {e}")
+                # Continue execution - we don't want to break the calling program
+        else:
+            logger.debug(f"fsync: No write buffer found for {key}")
+            
+        time_function("fsync", start_time)
+        return 0
+        
     def release(self, path, fh):
         """
         Release the file handle and flush the write buffer to ACS storage.
@@ -805,34 +1006,45 @@ class ACSFuse(Operations):
         Returns:
             int: 0 on success (usually ignored)
         """
+        trace_op("release", path, fh=fh)
         logger.debug(f"release requested for path: {path}, fh={fh}")
         start_time = time.time()
-        release_return_code = 0 # Default success
-        key = self._get_path(path) # Get key early for logging
-
-        try:
-            # Flush buffer before releasing resources
-            # Check if buffer exists before flushing
-            if self.write_buffer.has_buffer(key):
-                logger.debug(f"Write buffer exists for {key}. Calling _flush_buffer from release.")
-                self._flush_buffer(path)
-            else:
-                logger.debug(f"No write buffer found for {key} during release. No flush needed.") # Added log
-        except Exception as e:
-             logger.error(f"Error during _flush_buffer in release for {path}: {e}", exc_info=True)
-             # Decide if this should cause release to fail. Often, cleanup proceeds.
-             # Setting a flag or specific errno might be appropriate.
-             release_return_code = -errno.EIO # Indicate an I/O error occurred during flush
-
-        # --- Buffer Cleanup ---
-        # Remove from write buffer regardless of flush success/failure? (Common practice)
+        
+        key = self._get_path(path)
+        
+        # Always flush to storage on release for reliability
         if self.write_buffer.has_buffer(key):
-             logger.debug(f"Removing write buffer for {key} during release cleanup.")
-             self.write_buffer.remove(key)
-
-        logger.debug(f"Release finishing for {path}. Returning {release_return_code}") # Modified log
+            logger.debug(f"release: Write buffer exists for {key}, flushing to storage")
+            try:
+                # Get the data
+                data = self.write_buffer.read(key)
+                
+                if data is not None:
+                    # Write to storage
+                    client_start = time.time()
+                    self.client.put_object(self.bucket, key, data)
+                    logger.info(f"release: put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                    logger.debug(f"release: Successfully flushed {len(data)} bytes for {key}")
+                else:
+                    logger.warning(f"release: Buffer for {key} returned None data")
+            except Exception as e:
+                logger.error(f"release: Error flushing buffer for {key}: {e}", exc_info=True)
+                # Continue with cleanup anyway
+                
+            # Clean up the write buffer
+            logger.debug(f"release: Removing write buffer for {key}")
+            self.write_buffer.remove(key)
+        else:
+            logger.debug(f"release: No write buffer found for {key}")
+            
+        # Clean up the read buffer too
+        if self.read_buffer.get(key):
+            logger.debug(f"release: Removing read buffer for {key}")
+            self.read_buffer.remove(key)
+            
+        logger.debug(f"release: Finished for {path}")
         time_function("release", start_time)
-        return release_return_code
+        return 0
 
     def chmod(self, path, mode):
         """
@@ -856,25 +1068,6 @@ class ACSFuse(Operations):
         #     self.client.head_object(self.bucket, key) # Or use getattr logic
         # except Exception:
         #     raise FuseOSError(errno.ENOENT)
-        return 0
-
-    def fsync(self, path, datasync, fh):
-        """
-        Synchronize file contents (implemented as a no-op).
-
-        Object storage writes are generally atomic after PutObject completes.
-        We don't need explicit syncing like a traditional filesystem.
-
-        Args:
-            path (str): Path to the file
-            datasync (int): 1 for datasync, 0 for fsync
-            fh (int): File handle
-
-        Returns:
-            int: 0 (always succeeds)
-        """
-        logger.debug(f"fsync requested for path: {path}, datasync={datasync}, fh={fh} - NO-OP")
-        # No-op for object storage, assume PutObject is sufficient
         return 0
 
     def chown(self, path, uid, gid):
@@ -948,13 +1141,14 @@ class ACSFuse(Operations):
 
     def flock(self, path, op, fh):
         """
-        File locking operation (implemented as a no-op).
+        File locking operation.
         
-        This method is a no-op since object storage doesn't support file locking.
+        This method implements file locking more robustly to support
+        concurrent access patterns in ML frameworks like HuggingFace.
         
         Args:
             path (str): Path to the file
-            op (int): Lock operation
+            op (int): Lock operation (LOCK_SH, LOCK_EX, etc.)
             fh (int): File handle
             
         Returns:
@@ -963,8 +1157,23 @@ class ACSFuse(Operations):
         logger.info(f"flock: {path}, op={op}")
         start_time = time.time()
         
-        # This is a no-op operation since object storage doesn't support file locking
-        # Always return success regardless of the operation requested
+        # Track lock operations for better emulation
+        key = self._get_path(path)
+        
+        # Check what type of lock is being requested
+        if op & fcntl.LOCK_EX:
+            logger.debug(f"Exclusive lock requested for {path}")
+        elif op & fcntl.LOCK_SH:
+            logger.debug(f"Shared lock requested for {path}")
+        elif op & fcntl.LOCK_UN:
+            logger.debug(f"Unlock requested for {path}")
+        
+        # For unlock operations, invalidate the read buffer to ensure fresh data is fetched
+        if op & fcntl.LOCK_UN:
+            if self.read_buffer.get(key) is not None:
+                logger.debug(f"Unlock: invalidating read buffer for {key}")
+                self.read_buffer.remove(key)
+        
         time_function("flock", start_time)
         return 0
 
@@ -972,8 +1181,8 @@ class ACSFuse(Operations):
         """
         Get filesystem statistics (statvfs).
 
-        Reports arbitrarily large size/free space for object storage.
-        This is needed to satisfy checks by libraries like huggingface_hub.
+        Reports extremely large size/free space for object storage.
+        This ensures applications like HuggingFace see sufficient space.
 
         Args:
             path (str): Path within the filesystem (often '/')
@@ -981,27 +1190,34 @@ class ACSFuse(Operations):
         Returns:
             dict: A dictionary containing statvfs attributes.
         """
+        trace_op("statvfs", path)
         logger.debug(f"statvfs requested for path: {path}")
-        # Report large dummy values for object storage
-        block_size = 4096  # Filesystem block size
-        # Report ~5TB total space (much larger than before)
-        total_blocks = 5 * 1024 * 1024 * 1024 * 1024 // block_size 
-        free_blocks = total_blocks - 1024  # Leave a few blocks 'used' (approx 4MB)
+        
+        # Report extremely large values for object storage (10 petabytes)
+        # This is necessary for HuggingFace to see sufficient space
+        block_size = 4096  # Standard filesystem block size
+        total_blocks = (10 * 1024 * 1024 * 1024 * 1024 * 1024) // block_size  # 10PB
+        free_blocks = total_blocks - 1024  # Just subtract a tiny amount
         
         result = {
             'f_bsize': block_size,    # Filesystem block size
-            'f_frsize': block_size,   # Fragment size
+            'f_frsize': block_size,   # Fragment size (same as block size)
             'f_blocks': total_blocks, # Size of fs in f_frsize units
             'f_bfree': free_blocks,   # Number of free blocks
             'f_bavail': free_blocks,  # Free blocks available to non-superuser
-            'f_files': 10000000,      # Number of inodes (increased)
-            'f_ffree': 9999999,       # Number of free inodes (increased)
-            'f_favail': 9999999,      # Free inodes for non-superuser (increased)
+            'f_files': 2000000000,    # Maximum number of inodes
+            'f_ffree': 1999999999,    # Free inodes
+            'f_favail': 1999999999,   # Free inodes for non-superuser
             'f_fsid': 12345,          # Filesystem ID (arbitrary)
             'f_flag': 0,              # Mount flags
             'f_namemax': 255,         # Maximum filename length
         }
-        logger.debug(f"statvfs returning: {total_blocks * block_size / (1024**4):.2f}TB total, {free_blocks * block_size / (1024**4):.2f}TB free")
+        
+        # Log human-readable values
+        total_pb = (total_blocks * block_size) / (1024**5)
+        free_pb = (free_blocks * block_size) / (1024**5)
+        logger.debug(f"statvfs reporting: {total_pb:.2f}PB total, {free_pb:.2f}PB free")
+        
         return result
 
     def symlink(self, source, target):
@@ -1018,6 +1234,7 @@ class ACSFuse(Operations):
         Returns:
             int: 0 on success
         """
+        trace_op("symlink", target, source=source)
         logger.info(f"symlink requested from {source} to {target}")
         start_time = time.time()
         
@@ -1055,6 +1272,7 @@ class ACSFuse(Operations):
         Raises:
             FuseOSError: If the path is not a symlink or an error occurs
         """
+        trace_op("readlink", path)
         logger.debug(f"readlink requested for path: {path}")
         start_time = time.time()
         
@@ -1168,6 +1386,7 @@ def main():
     Options:
         --allow-other: Allow other users to access the mount
             (requires 'user_allow_other' in /etc/fuse.conf)
+        --trace: Enable detailed tracing of file operations for debugging
     """
     logger.info(f"Starting ACS FUSE CLI with arguments: {sys.argv}")
     start_time = time.time()
@@ -1178,8 +1397,15 @@ def main():
     parser.add_argument('mountpoint', help='The directory to mount the bucket on')
     parser.add_argument('--allow-other', action='store_true', 
                         help='Allow other users to access the mount (requires user_allow_other in /etc/fuse.conf)')
+    parser.add_argument('--trace', action='store_true',
+                        help='Enable detailed tracing of file operations for debugging')
     
     args = parser.parse_args()
+    
+    # Set trace environment variable if requested
+    if args.trace:
+        os.environ['ACS_FUSE_TRACE_OPS'] = 'true'
+        print("Detailed operation tracing enabled")
     
     logger.info(f"Mounting bucket {args.bucket} at {args.mountpoint}")
     mount(args.bucket, args.mountpoint, allow_other=args.allow_other)

@@ -95,7 +95,7 @@ def get_mount_options(foreground=True, allow_other=False):
     Get standard mount options for FUSE.
     
     This function returns a dictionary of options to use when mounting
-    a FUSE filesystem.
+    a FUSE filesystem, with options set to support memory mapping for ML workloads.
     
     Args:
         foreground (bool, optional): Run in foreground. Defaults to True.
@@ -110,14 +110,22 @@ def get_mount_options(foreground=True, allow_other=False):
         'nonempty': True,
         'debug': True,
         'default_permissions': True,
-        'direct_io': False,  # Better for regular file access patterns
+        # For memory mapping to work, direct_io must be OFF
+        'direct_io': False,
         'rw': True,
         'big_writes': True,
-        'max_read': 32 * 1024 * 1024,    # 32MB read size (reduced from 4GB)
-        'max_write': 32 * 1024 * 1024,   # 32MB write size (reduced from 4GB)
-        'kernel_cache': True,            # Enable kernel caching
-        'auto_cache': True,              # Enable automatic cache management
-        'max_readahead': 32 * 1024 * 1024,  # 32MB readahead (reduced from 4GB)
+        # Use moderate buffer sizes
+        'max_read': 8 * 1024 * 1024,      # 8MB read size
+        'max_write': 8 * 1024 * 1024,     # 8MB write size
+        'max_readahead': 8 * 1024 * 1024, # 8MB readahead
+        # For memory mapping to work, enable kernel caching
+        'kernel_cache': True,
+        'auto_cache': True,
+        # For interrupting stuck operations
+        'intr': True,
+        # Ensure hard_remove and atomic operations
+        'hard_remove': True,
+        'atomic_o_trunc': True,
     }
     
     # Only add allow_other if explicitly requested
