@@ -114,14 +114,14 @@ def get_mount_options(foreground=True, allow_other=False):
         'direct_io': False,
         'rw': True,
         'big_writes': True,
-        # Use moderate buffer sizes
-        'max_read': 8 * 1024 * 1024,      # 8MB read size
-        'max_write': 8 * 1024 * 1024,     # 8MB write size
-        'max_readahead': 8 * 1024 * 1024, # 8MB readahead
-        # For memory mapping to work, enable kernel caching
+        # Use larger buffer sizes for better performance
+        'max_read': 64 * 1024 * 1024,      # 64MB read size
+        'max_write': 64 * 1024 * 1024,     # 64MB write size
+        'max_readahead': 64 * 1024 * 1024, # 64MB readahead
+        # Enable all caching for better performance
         'kernel_cache': True,
         'auto_cache': True,
-        # For interrupting stuck operations
+        # Enable interrupt handling
         'intr': True,
         # Ensure hard_remove and atomic operations
         'hard_remove': True,
