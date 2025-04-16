@@ -96,6 +96,7 @@ def get_mount_options(foreground=True, allow_other=False):
     
     This function returns a dictionary of options to use when mounting
     a FUSE filesystem, with options set to support memory mapping for ML workloads.
+    Options are optimized for maximum I/O performance.
     
     Args:
         foreground (bool, optional): Run in foreground. Defaults to True.
@@ -114,18 +115,19 @@ def get_mount_options(foreground=True, allow_other=False):
         'direct_io': False,
         'rw': True,
         'big_writes': True,
-        # Use larger buffer sizes for better performance
-        'max_read': 64 * 1024 * 1024,      # 64MB read size
-        'max_write': 64 * 1024 * 1024,     # 64MB write size
-        'max_readahead': 64 * 1024 * 1024, # 64MB readahead
+        # Use extreme buffer sizes for ML workloads
+        'max_read': 1024 * 1024 * 1024,      # 1GB read size 
+        'max_write': 1024 * 1024 * 1024,     # 1GB write size
+        'max_readahead': 1024 * 1024 * 1024, # 1GB readahead
         # Enable all caching for better performance
-        'kernel_cache': True,
-        'auto_cache': True,
-        # Enable interrupt handling
-        'intr': True,
-        # Ensure hard_remove and atomic operations
-        'hard_remove': True,
-        'atomic_o_trunc': True,
+        'kernel_cache': True,  # Important for memory mapping
+        'auto_cache': True,    # Important for read performance
+        'entry_timeout': 3600,  # Cache entry attributes for 1 hour
+        'attr_timeout': 3600,   # Cache file/dir attributes for 1 hour
+        'ac_attr_timeout': 3600, # Cache file attributes on access
+        # Performance tuning
+        'big_writes': True,    # Enable large writes
+        'large_read': True,    # Enable large reads
     }
     
     # Only add allow_other if explicitly requested
