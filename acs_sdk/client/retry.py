@@ -133,6 +133,7 @@ def retry(
             """
             last_exception = None
             backoff = initial_backoff
+            re_authenticated_this_cycle = False # Flag to prevent infinite re-auth loops
 
             # Extract operation from function name if possible
             operation = None
@@ -148,16 +149,53 @@ def retry(
                     if isinstance(e, grpc.RpcError):
                         # Get status code with better error handling
                         status_code = grpc.StatusCode.UNKNOWN
-                        if hasattr(e, 'code'):
+                        if hasattr(e, 'code') and callable(e.code):
                             status_code = e.code()
-                        elif hasattr(e, '_code'):
+                        elif hasattr(e, '_code'): # Fallback for some error types
                             status_code = e._code
                         
-                        # Convert error and raise if not retryable
-                        if status_code not in RETRYABLE_STATUS_CODES:
-                            raise _convert_grpc_error(e, operation)
+                        # Check for UNAUTHENTICATED first
+                        if status_code == grpc.StatusCode.UNAUTHENTICATED:
+                            if not re_authenticated_this_cycle and attempt < max_attempts - 1:
+                                print(f"Caught UNAUTHENTICATED error during {func.__name__}, attempting re-authentication...")
+                                try:
+                                    # Assume the first arg is the client instance ('self')
+                                    if args and hasattr(args[0], '_re_authenticate') and callable(getattr(args[0], '_re_authenticate')):
+                                        client_instance = args[0]
+                                        client_instance._re_authenticate() # Call the re-auth method
+                                        re_authenticated_this_cycle = True # Set flag after successful call
+                                        print(f"Re-authentication successful for {func.__name__}. Retrying operation...")
+                                        # Continue the loop to retry the operation
+                                        continue 
+                                    else:
+                                        print("Could not find _re_authenticate method on client instance. Raising original error.")
+                                        raise _convert_grpc_error(e, operation) # Cannot re-authenticate
+                                except Exception as reauth_err:
+                                    # If re-authentication itself fails, raise that error immediately
+                                    print(f"Re-authentication failed during retry for {func.__name__}: {reauth_err}. Raising error.")
+                                    raise ACSError(f"Re-authentication failed: {reauth_err}") from reauth_err
+                            else:
+                                # Already tried re-authenticating or it's the last attempt
+                                print(f"UNAUTHENTICATED error on attempt {attempt + 1}/{max_attempts} for {func.__name__} (already tried re-auth: {re_authenticated_this_cycle}). Raising error.")
+                                raise _convert_grpc_error(e, operation)
 
-                    # Don't sleep on the last attempt
+                        # If not UNAUTHENTICATED, check other retryable codes
+                        elif status_code in RETRYABLE_STATUS_CODES:
+                            print(f"Caught retryable gRPC error ({status_code}) during {func.__name__}. Attempt {attempt + 1}/{max_attempts}. Retrying after {backoff:.2f}s...")
+                            # Proceed with standard backoff/retry logic below
+                            pass 
+                        else:
+                            # Not UNAUTHENTICATED and not in standard retryable codes
+                            print(f"Caught non-retryable gRPC error ({status_code}) during {func.__name__}. Raising error.")
+                            raise _convert_grpc_error(e, operation)
+                    else:
+                        # Handle non-gRPC exceptions if they are in retryable_exceptions
+                        # (Currently defaults to only grpc.RpcError, so this part might not be hit)
+                        print(f"Caught non-gRPC retryable exception {type(e).__name__} during {func.__name__}. Attempt {attempt + 1}/{max_attempts}. Retrying after {backoff:.2f}s...")
+                        # Proceed with standard backoff/retry logic below
+                        pass
+
+                    # Common backoff logic for retryable errors (excluding UNAUTHENTICATED which uses 'continue')
                     if attempt < max_attempts - 1:
                         time.sleep(backoff)
                         backoff = min(backoff * backoff_multiplier, max_backoff)
