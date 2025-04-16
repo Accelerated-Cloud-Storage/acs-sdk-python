@@ -407,26 +407,21 @@ class ACSFuse(Operations):
         
         key = self._get_path(path)
         try:
-            # 1. Check write buffer (unlikely for read-heavy post-download)
+            # 1. Check write buffer first
             if self.write_buffer.has_buffer(key):
-                # Use get_size for potentially spooled files
-                write_data_len = self.write_buffer.get_size(key)
-                if offset >= write_data_len:
-                    return b""
-                # Read only the required part from write buffer if needed
-                # Note: This might still be inefficient if write_buffer.read() reads all
-                # We rely on the spooled file optimization here.
-                write_data = self.write_buffer.read(key) 
-                if write_data is not None:
-                    end_offset = min(offset + size, len(write_data))
-                    result = write_data[offset:end_offset]
-                    logger.debug(f"Read {len(result)} bytes from write buffer for {key}")
-                    return result
+                logger.debug(f"Read path: Found key {key} in write buffer. Attempting read with offset/size.")
+                # Use the refactored read method with offset and size
+                write_chunk = self.write_buffer.read(key, offset=offset, size=size)
+                if write_chunk is not None:
+                    logger.debug(f"Read {len(write_chunk)} bytes directly from write buffer for {key} at offset {offset}")
+                    time_function("read (from write_buffer)", start_time)
+                    return write_chunk
                 else:
-                    logger.warning(f"Write buffer for {key} returned None unexpectedly")
-                    # Fall through to check read buffer / fetch
-            
-            # 2. Check read buffer 
+                    # read returning None likely indicates an error or closed buffer
+                    logger.error(f"Write buffer read for {key} returned None unexpectedly. Falling back...")
+                    # Fall through to check read buffer / fetch, but log this as an issue.
+
+            # 2. Check read buffer
             # Use the get method which handles chunking within BufferEntry
             cached_data_chunk = self.read_buffer.get(key, offset, size)
             if cached_data_chunk is not None:
@@ -438,24 +433,41 @@ class ACSFuse(Operations):
                 
             # 3. Buffer MISS - Fetch the object (or required part) from ACS
             logger.debug(f"Read buffer MISS for {key} at offset {offset}")
-            # --- Always fetch on miss --- 
+            # --- Always fetch on miss ---
             # Remove the _fully_fetched_keys optimization. If data isn't in the buffer,
             # we must fetch it from the source to ensure correctness, even if it means
             # re-fetching data that was previously evicted.
+            # Check existence first to provide a better error
+            try:
+                 logger.info(f"Read buffer miss for {key}. Checking existence with head_object...")
+                 head_start = time.time()
+                 metadata = self.client.head_object(self.bucket, key)
+                 logger.info(f"head_object check for {key} completed in {time.time() - head_start:.4f}s. Size: {metadata.content_length}")
+            except Exception as head_e:
+                 # Explicitly check for NoSuchKey / Not Found type errors from head_object
+                 if "NoSuchKey" in str(head_e) or "Not Found" in str(head_e):
+                      logger.error(f"Object {key} confirmed NOT FOUND during head_object check before get_object: {head_e}")
+                      raise FuseOSError(errno.ENOENT) # Raise specific error if head confirms not found
+                 else:
+                      logger.warning(f"head_object check failed for {key} with unexpected error: {head_e}. Proceeding with get_object cautiously.", exc_info=True)
+                      # Proceed to get_object, but log the warning
+
             logger.info(f"Read buffer miss for {key}. Fetching entire object from ACS...")
             client_start = time.time()
             try:
                 data = self.client.get_object(self.bucket, key)
-            except ObjectError as oe:
-                 # If the object truly doesn't exist, return ENOENT
-                 if "Object does not exist" in str(oe):
-                      logger.error(f"Object {key} not found during get_object: {oe}")
+            except Exception as oe: # Catch broader exceptions during get_object now
+                 # If the object truly doesn't exist (should have been caught by head_object ideally)
+                 if "NoSuchKey" in str(oe) or "Not Found" in str(oe):
+                      logger.error(f"Object {key} not found during get_object (expected head_object to catch this): {oe}")
                       raise FuseOSError(errno.ENOENT)
                  else:
-                      raise # Re-raise other ObjectErrors
+                      logger.error(f"Unexpected error during get_object for {key}: {oe}", exc_info=True)
+                      raise FuseOSError(errno.EIO) # Raise generic IO error for other get_object failures
+
             fetch_time = time.time() - client_start
             logger.info(f"get_object for {key} completed in {fetch_time:.4f}s, fetched {len(data)} bytes")
-            
+
             # Add entire object to read buffer (which handles chunking)
             self.read_buffer.put(key, data)
             
@@ -976,28 +988,20 @@ class ACSFuse(Operations):
         if self.write_buffer.has_buffer(key):
             logger.debug(f"fsync: Flushing write buffer for {key}")
             try:
-                # Read the data from the buffer
-                data = self.write_buffer.read(key)
-                
-                if data is not None:
-                    # Write to storage
-                    client_start = time.time()
-                    self.client.put_object(self.bucket, key, data)
-                    logger.info(f"fsync: put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-                    logger.debug(f"fsync: Successfully flushed {len(data)} bytes for {key}")
-                    
-                    # No need to remove from write buffer as we may need it again
-                    # But do invalidate the read buffer
-                    if self.read_buffer.get(key):
-                        self.read_buffer.remove(key)
-                else:
-                    logger.warning(f"fsync: Buffer for {key} returned None data")
+                # Use internal _flush_buffer logic which handles spooled files correctly
+                self._flush_buffer(path) # Call the internal flush method
+                logger.debug(f"fsync: Successfully flushed buffer for {key} via _flush_buffer")
+
+                # Invalidate the read buffer after successful flush
+                if self.read_buffer.get(key):
+                    self.read_buffer.remove(key)
             except Exception as e:
-                logger.error(f"fsync: Error flushing buffer for {key}: {e}")
-                # Continue execution - we don't want to break the calling program
+                logger.error(f"fsync: Error during _flush_buffer for {key}: {e}", exc_info=True)
+                # Decide if we should raise FuseOSError(errno.EIO) here or just log
+                # For fsync, often best effort is acceptable, so just log for now.
         else:
             logger.debug(f"fsync: No write buffer found for {key}")
-            
+
         time_function("fsync", start_time)
         return 0
         
@@ -1023,28 +1027,15 @@ class ACSFuse(Operations):
         
         # Always flush to storage on release for reliability
         if self.write_buffer.has_buffer(key):
-            logger.debug(f"release: Write buffer exists for {key}, flushing to storage")
+            logger.debug(f"release: Write buffer exists for {key}, flushing to storage via _flush_buffer")
             try:
-                # Get the data
-                data = self.write_buffer.read(key)
-                
-                if data is not None:
-                    data_len = len(data) # Get length *before* put_object
-                    logger.info(f"release: Flushing {data_len} bytes for key {key}")
-                    if data_len == 0:
-                         logger.warning(f"release: Attempting to flush ZERO bytes for key {key}. Was the write buffer empty?")
-                         
-                    # Write to storage
-                    client_start = time.time()
-                    self.client.put_object(self.bucket, key, data)
-                    logger.info(f"release: put_object call for {key} (flushed {data_len} bytes) completed in {time.time() - client_start:.4f} seconds")
-                else:
-                    logger.warning(f"release: Buffer for {key} returned None data")
+                 self._flush_buffer(path) # Call the internal flush method
+                 logger.info(f"release: Successfully flushed buffer for {key} via _flush_buffer")
             except Exception as e:
-                logger.error(f"release: Error flushing buffer for {key}: {e}", exc_info=True)
+                logger.error(f"release: Error during _flush_buffer for {key}: {e}", exc_info=True)
                 # Continue with cleanup anyway
-                
-            # Clean up the write buffer
+
+            # Clean up the write buffer *after* attempting flush
             logger.debug(f"release: Removing write buffer for {key}")
             self.write_buffer.remove(key)
         else:

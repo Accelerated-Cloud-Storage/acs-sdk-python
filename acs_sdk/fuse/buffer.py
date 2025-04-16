@@ -19,9 +19,10 @@ import shutil
 
 # Buffer configuration
 FIXED_TTL = 3600  # 60 minutes TTL for all files
-CHUNK_SIZE = 64 * 1024 * 1024  # 64MB chunk size for large files
-LARGE_FILE_THRESHOLD = 100 * 1024 * 1024  # 100MB threshold for chunked storage
-MIN_LOG_SIZE = 10 * 1024 * 1024  # Only log detailed info for files >10MB
+MIN_LOG_SIZE = 0  # Only log detailed info for files >10MB
+# --- Spool Size ---
+# Spool to disk after 10GB in RAM for buffer entries
+DEFAULT_SPOOL_MAX_SIZE = 10 * 1024 * 1024 * 1024 
 
 def calculate_ttl(size: int) -> int:
     """
@@ -40,108 +41,101 @@ def calculate_ttl(size: int) -> int:
 
 class BufferEntry:
     """
-    Represents a buffered file with access time tracking.
-    
-    Uses a memory-efficient storage approach for ML model files.
+    Represents a buffered file with access time tracking, using SpooledTemporaryFile.
     
     Attributes:
-        data (bytes or dict): The file content (whole or chunked)
-        last_access (float): Timestamp of the last access
-        timer (threading.Timer): Timer for automatic removal
-        ttl (int): Time-to-live in seconds
-        is_chunked (bool): Whether this entry uses chunked storage
+        spooled_file (tempfile.SpooledTemporaryFile): Stores the file content efficiently.
+        last_access (float): Timestamp of the last access.
+        timer (threading.Timer): Timer for automatic removal.
+        ttl (int): Time-to-live in seconds.
     """
     
     def __init__(self, data: bytes):
         """
-        Initialize a new buffer entry with smart storage.
+        Initialize a new buffer entry using SpooledTemporaryFile.
         
         Args:
-            data (bytes): The file content to buffer
+            data (bytes): The file content to buffer.
         """
         self.last_access = time.time()
         self.timer = None
         self.ttl = FIXED_TTL
-        self.is_chunked = len(data) > LARGE_FILE_THRESHOLD
         
-        # Store large files as chunks to reduce memory pressure
-        if self.is_chunked:
-            self.data = {}
-            for i in range(0, len(data), CHUNK_SIZE):
-                chunk_idx = i // CHUNK_SIZE
-                chunk_end = min(i + CHUNK_SIZE, len(data))
-                self.data[chunk_idx] = data[i:chunk_end]
-        else:
-            self.data = data
+        # Create a SpooledTemporaryFile to hold the data
+        self.spooled_file = tempfile.SpooledTemporaryFile(
+            max_size=DEFAULT_SPOOL_MAX_SIZE, 
+            mode='w+b'
+        )
+        if data:
+            self.spooled_file.write(data)
+            self.spooled_file.seek(0) # Reset position after writing initial data
 
     def get_data(self, offset=0, size=None):
         """
-        Get data efficiently from buffer, handling chunked storage.
+        Get data efficiently from the SpooledTemporaryFile buffer.
         
         Args:
-            offset (int): Starting offset
-            size (int, optional): Amount to read, or None for all data
+            offset (int): Starting offset.
+            size (int, optional): Amount to read, or None for all data from offset.
             
         Returns:
-            bytes: The requested data
+            bytes: The requested data. Returns b"" if offset is beyond EOF.
         """
-        if not self.is_chunked:
-            # Handle non-chunked data simply
-            data_len = len(self.data)
-            if offset >= data_len:
+        if not self.spooled_file or self.spooled_file.closed:
+             logger.error("Attempted to read from a closed or invalid SpooledTemporaryFile in BufferEntry.")
+             return b""
+             
+        try:
+            current_size = self.get_size()
+            if offset >= current_size:
                 return b"" # Read past EOF
-            end = data_len if size is None else min(offset + size, data_len)
-            return self.data[offset:end]
-        
-        # For chunked storage, only load the required chunks
-        # --- Refined Chunked Data Retrieval --- 
-        result = bytearray()
-        current_pos = offset
-        bytes_to_read = size
-
-        # Determine the total size represented by chunks (needed if size is None)
-        total_chunked_size = 0
-        if self.data: # Check if data dictionary is not empty
-             max_chunk_index = max(self.data.keys())
-             if max_chunk_index in self.data:
-                 total_chunked_size = max_chunk_index * CHUNK_SIZE + len(self.data[max_chunk_index])
-        
-        # If size is None, read until the end of the represented data
-        if bytes_to_read is None:
-            if offset >= total_chunked_size:
-                return b""
-            bytes_to_read = total_chunked_size - offset
-
-        # Calculate the absolute end position
-        end_pos = offset + bytes_to_read
-
-        while current_pos < end_pos:
-            chunk_idx = current_pos // CHUNK_SIZE
-            offset_in_chunk = current_pos % CHUNK_SIZE
-
-            if chunk_idx not in self.data:
-                # This indicates a serious problem - a chunk is missing!
-                # This might happen if eviction logic incorrectly removed a single chunk.
-                logger.error(f"ReadBuffer Error: Chunk {chunk_idx} missing while reading data.")
-                # Returning partial data is risky for mmap. Best to stop here.
-                break 
-
-            chunk = self.data[chunk_idx]
-            bytes_in_chunk = len(chunk)
-
-            # How many bytes to read from *this* chunk
-            read_from_chunk = min(bytes_in_chunk - offset_in_chunk, end_pos - current_pos)
-
-            if read_from_chunk <= 0:
-                # Should not happen if end_pos logic is correct, but safety break
-                break 
                 
-            result.extend(chunk[offset_in_chunk : offset_in_chunk + read_from_chunk])
-            current_pos += read_from_chunk
+            self.spooled_file.seek(offset)
+            
+            if size is None:
+                # Read from offset to end
+                return self.spooled_file.read()
+            else:
+                # Read specific size, respecting EOF
+                # Calculate bytes remaining from offset
+                bytes_remaining = current_size - offset
+                read_size = min(size, bytes_remaining)
+                return self.spooled_file.read(read_size)
+                
+        except Exception as e:
+            logger.error(f"Error reading from spooled file in BufferEntry: {e}", exc_info=True)
+            return b""
 
-        # The loop condition ensures we don't read more than requested.
-        # No final trim needed unless the loop breaks unexpectedly.
-        return bytes(result)
+    def get_size(self) -> int:
+        """
+        Gets the current size of the data stored in the SpooledTemporaryFile.
+
+        Returns:
+            int: The size of the stored data in bytes. Returns 0 if file is invalid/closed.
+        """
+        if not self.spooled_file or self.spooled_file.closed:
+            return 0
+        try:
+            original_pos = self.spooled_file.tell()
+            self.spooled_file.seek(0, 2) # os.SEEK_END
+            size = self.spooled_file.tell()
+            self.spooled_file.seek(original_pos) # Restore position
+            return size
+        except Exception as e:
+            logger.error(f"Error getting size from spooled file in BufferEntry: {e}", exc_info=True)
+            return 0 # Return 0 on error
+
+    def close(self) -> None:
+        """
+        Explicitly closes the SpooledTemporaryFile to release resources.
+        """
+        if self.spooled_file and not self.spooled_file.closed:
+            try:
+                self.spooled_file.close()
+                logger.debug("Closed SpooledTemporaryFile in BufferEntry.")
+            except Exception as e:
+                 logger.error(f"Error closing spooled file in BufferEntry: {e}", exc_info=True)
+        self.spooled_file = None # Ensure reference is cleared
 
 class ReadBuffer:
     """
@@ -154,32 +148,34 @@ class ReadBuffer:
     Attributes:
         buffer (dict): Dictionary mapping keys to BufferEntry objects
         lock (threading.RLock): Lock for thread-safe operations
-        _total_size (int): Approximate memory usage of buffer
+        _total_size (int): Approximate memory usage/disk space of buffer contents
     """
     
-    def __init__(self, max_size_gb=None):
+    def __init__(self):
         """
-        Initialize an empty read buffer with optional size limit.
-        
-        Args:
-            max_size_gb (float, optional): Maximum buffer size in GB
+        Initialize an empty read buffer.
         """
         self.buffer = {}  # Simple dict for faster lookups
         self.lock = RLock()  # Reentrant lock for nested operations
         self._total_size = 0  # Track approximate memory usage
-        self._max_size = max_size_gb * 1024 * 1024 * 1024 if max_size_gb else None
+        self._spool_max_size = DEFAULT_SPOOL_MAX_SIZE # Keep track of spool size per entry
         
-        # Setup finalizer to clean up timers
-        self._finalizer = weakref.finalize(self, self._cleanup_timers, self.buffer.copy())
+        # Setup finalizer to clean up timers and files
+        self._finalizer = weakref.finalize(self, self._cleanup_resources, self.buffer.copy())
 
-    def _cleanup_timers(self, buffer_copy):
-        """Clean up all timers during garbage collection"""
-        for entry in buffer_copy.values():
-            if entry.timer:
-                try:
-                    entry.timer.cancel()
-                except:
-                    pass
+    def _cleanup_resources(self, buffer_copy):
+        """Clean up all timers and close spooled files during garbage collection"""
+        logger.debug(f"ReadBuffer Finalizer: Cleaning up {len(buffer_copy)} entries.")
+        for key, entry in buffer_copy.items():
+            if entry:
+                if entry.timer:
+                    try:
+                        entry.timer.cancel()
+                    except:
+                        pass # Ignore errors during cleanup
+                # Close the spooled file
+                entry.close()
+        logger.debug("ReadBuffer Finalizer: Cleanup complete.")
 
     def get(self, key: str, offset=0, size=None) -> bytes:
         """
@@ -212,7 +208,7 @@ class ReadBuffer:
 
     def put(self, key: str, data: bytes) -> None:
         """
-        Add data to buffer with TTL and memory management.
+        Add data to buffer with TTL and memory management using BufferEntry.
         
         Args:
             key (str): The key identifying the file
@@ -223,27 +219,30 @@ class ReadBuffer:
             return
             
         with self.lock:
+            data_size = len(data) # Get size before creating entry
+            
             # Remove existing entry if present
             if key in self.buffer:
                 old_entry = self.buffer[key]
                 if old_entry.timer:
                     old_entry.timer.cancel()
                 
-                # Update size tracking (estimate)
-                if old_entry.is_chunked:
-                    old_size = sum(len(chunk) for chunk in old_entry.data.values())
-                else:
-                    old_size = len(old_entry.data)
+                # Update size tracking using entry's size
+                old_size = old_entry.get_size()
                 self._total_size -= old_size
+                
+                # Explicitly close the old spooled file
+                old_entry.close() 
                 
                 del self.buffer[key]
             
-            # Check memory pressure and clear oldest entries if needed
-            if self._max_size and self._total_size + len(data) > self._max_size:
-                self._evict_oldest_entries(len(data))
-            
-            # Create new entry with fixed TTL
-            entry = BufferEntry(data)
+            # Create new entry (initializes SpooledTemporaryFile)
+            try:
+                 entry = BufferEntry(data)
+            except Exception as e:
+                 logger.error(f"Failed to create BufferEntry for key {key}: {e}", exc_info=True)
+                 return # Don't proceed if entry creation fails
+
             entry.timer = threading.Timer(entry.ttl, lambda: self.remove(key))
             entry.timer.daemon = True
             entry.timer.start()
@@ -251,79 +250,52 @@ class ReadBuffer:
             # Add to buffer
             self.buffer[key] = entry
             
-            # Update size tracking
-            self._total_size += len(data)
+            # Update size tracking using actual entry size
+            current_entry_size = entry.get_size()
+            self._total_size += current_entry_size
             
             # Only log detailed info for larger files
-            if len(data) > MIN_LOG_SIZE:
-                logger.debug(f"Added to buffer: {key} (size: {len(data)/1024/1024:.2f}MB, TTL: {entry.ttl}s)")
-
-    def _evict_oldest_entries(self, required_space):
-        """
-        Evict oldest entries until enough space is available.
-        
-        Args:
-            required_space (int): Space needed in bytes
-        """
-        entries = [(k, v.last_access) for k, v in self.buffer.items()]
-        entries.sort(key=lambda x: x[1])  # Sort by last_access time
-        
-        for key, _ in entries:
-            entry = self.buffer[key]
-            # Skip if timer already cancelled
-            if entry.timer:
-                entry.timer.cancel()
-            
-            # Estimate size
-            if entry.is_chunked:
-                size = sum(len(chunk) for chunk in entry.data.values())
-            else:
-                size = len(entry.data)
-                
-            self._total_size -= size
-            del self.buffer[key]
-            
-            logger.debug(f"Evicted from buffer: {key} due to memory pressure")
-            
-            # Check if we've freed enough space
-            if self._total_size + required_space <= self._max_size:
-                break
+            if current_entry_size > MIN_LOG_SIZE:
+                logger.debug(f"Added to read buffer: {key} (size: {current_entry_size/1024/1024:.2f}MB, TTL: {entry.ttl}s)")
 
     def remove(self, key: str) -> None:
         """
-        Remove an entry from buffer.
+        Remove an entry from buffer and close its spooled file.
         
         Args:
             key (str): The key identifying the file to remove
         """
         with self.lock:
             if key in self.buffer:
-                entry = self.buffer[key]
+                entry = self.buffer.pop(key) # Remove from dict first
+                
                 if entry.timer:
                     entry.timer.cancel()
                 
-                # Update size tracking
-                if entry.is_chunked:
-                    size = sum(len(chunk) for chunk in entry.data.values())
-                else:
-                    size = len(entry.data)
-                    
+                # Get size for logging and tracking before closing
+                size = entry.get_size()
                 self._total_size -= size
-                del self.buffer[key]
+                self._total_size = max(0, self._total_size) # Ensure non-negative
+                
+                # Explicitly close the spooled file
+                entry.close()
                 
                 # Only log for larger files
                 if size > MIN_LOG_SIZE:
-                    logger.debug(f"Removed from buffer: {key}")
+                    logger.debug(f"Removed from read buffer: {key} (size: {size/1024/1024:.2f}MB)")
 
     def clear(self) -> None:
-        """Clear all entries from buffer."""
+        """Clear all entries from buffer, closing their files."""
         with self.lock:
-            for entry in self.buffer.values():
-                if entry.timer:
-                    entry.timer.cancel()
-            self.buffer.clear()
-            self._total_size = 0
-            logger.debug("Buffer cleared")
+             logger.debug(f"Clearing ReadBuffer ({len(self.buffer)} entries)...")
+             for key, entry in self.buffer.items():
+                 if entry.timer:
+                     entry.timer.cancel()
+                 # Close the spooled file
+                 entry.close()
+             self.buffer.clear()
+             self._total_size = 0
+             logger.debug("ReadBuffer cleared")
 
 class WriteBuffer:
     """
@@ -338,9 +310,6 @@ class WriteBuffer:
         SPOOL_MAX_SIZE (int): Max size (bytes) to keep in memory before spilling to disk.
     """
     
-    # Spool to disk after 512MB in RAM
-    SPOOL_MAX_SIZE = 512 * 1024 * 1024 
-
     def __init__(self):
         """Initialize an empty write buffer manager."""
         self.buffers = {}  # Dictionary to store file buffers (SpooledTemporaryFile)
@@ -361,7 +330,7 @@ class WriteBuffer:
                 # Create a SpooledTemporaryFile
                 # 'w+b' allows reading and writing in binary mode
                 spooled_file = tempfile.SpooledTemporaryFile(
-                    max_size=self.SPOOL_MAX_SIZE, 
+                    max_size=DEFAULT_SPOOL_MAX_SIZE, 
                     mode='w+b' 
                 )
                 if data:
@@ -424,37 +393,77 @@ class WriteBuffer:
 
             return bytes_written
             
-    def read(self, key: str) -> bytes:
+    def read(self, key: str, offset: int = 0, size: int = None) -> bytes:
         """
-        Read the *entire* contents of a SpooledTemporaryFile buffer.
-        Required for compatibility with the unchanged ACSClient.put_object.
+        Read contents from a SpooledTemporaryFile buffer.
+        If size is None, reads the *entire* contents (needed for flushing).
+        If size is specified, reads a specific chunk from the given offset.
         
         Args:
-            key (str): The key identifying the file
+            key (str): The key identifying the file.
+            offset (int, optional): Starting offset for chunked read. Defaults to 0.
+            size (int, optional): Amount to read for chunked read. Defaults to None (read all).
             
         Returns:
-            bytes: The buffer contents or None if the buffer doesn't exist
+            bytes: The buffer contents (full or chunk) or None if the buffer doesn't exist or error occurs.
         """
         with self.lock:
-            if key in self.buffers:
-                buffer = self.buffers[key]
-                buffer.seek(0) # Go to the start
-                try:
-                    # Read everything into memory - needed for existing put_object
-                    data = buffer.read() 
-                    return data
-                except Exception as e:
-                    logger.error(f"Error reading from spooled file for key {key}: {e}", exc_info=True)
-                    return None # Or raise?
-                finally:
-                     # It's generally good practice to seek back to 0 after full read
-                     # although the current _flush_buffer doesn't rely on position.
-                     try:
-                         buffer.seek(0)
-                     except Exception: 
-                         pass # Ignore error if file is closed/invalid
-            return None
+            if key not in self.buffers:
+                logger.warning(f"read called on non-existent buffer {key}")
+                return None
             
+            buffer = self.buffers[key]
+            if not buffer or buffer.closed:
+                logger.error(f"read attempted on closed or invalid buffer for {key}")
+                if key in self.buffers: del self.buffers[key] # Clean up broken ref
+                return None
+
+            try:
+                original_pos = buffer.tell() # Store original position
+                
+                if size is None: 
+                    # Read ALL data (original behavior for flushing)
+                    logger.debug(f"Reading entire buffer for {key} (size=None)")
+                    buffer.seek(0)
+                    data = buffer.read()
+                    buffer.seek(original_pos) # Restore original position
+                    return data
+                else:
+                    # Read a specific chunk
+                    current_buffer_size = self.get_size(key)
+                    if offset >= current_buffer_size:
+                        logger.debug(f"read chunk for {key}: offset {offset} is beyond current size {current_buffer_size}")
+                        return b"" # Read past EOF
+                    
+                    buffer.seek(offset)
+                    bytes_remaining = current_buffer_size - offset
+                    read_size = min(size, bytes_remaining)
+                    
+                    if read_size <= 0:
+                         logger.debug(f"read chunk for {key}: calculated read_size is {read_size} at offset {offset}")
+                         return b"" # Nothing to read
+                         
+                    logger.debug(f"Reading chunk from buffer {key}: offset={offset}, read_size={read_size}")
+                    data_chunk = buffer.read(read_size)
+                    
+                    # Restore original position after chunk read too
+                    buffer.seek(original_pos)
+                    
+                    if len(data_chunk) != read_size:
+                         logger.warning(f"read chunk for {key}: Expected {read_size} bytes but got {len(data_chunk)}")
+
+                    return data_chunk
+
+            except Exception as e:
+                logger.error(f"Error reading from spooled file for key {key} (offset={offset}, size={size}): {e}", exc_info=True)
+                # Attempt to restore position even on error
+                try:
+                    if buffer and not buffer.closed:
+                        buffer.seek(original_pos)
+                except Exception as e_seek:
+                    logger.error(f"Error restoring seek position for {key} after read error: {e_seek}")
+                return None # Indicate error
+
     def truncate(self, key: str, length: int) -> None:
         """
         Truncate a SpooledTemporaryFile buffer to the specified length.
@@ -554,3 +563,57 @@ class WriteBuffer:
         with self.lock:
             # Additionally check if the file object is still valid/open? Maybe overkill.
             return key in self.buffers 
+
+    def read_chunk(self, key: str, offset: int, size: int) -> bytes:
+        """
+        Read a specific chunk of data from a SpooledTemporaryFile buffer.
+        This avoids loading the entire file into memory when only a part is needed.
+
+        Args:
+            key (str): The key identifying the file buffer.
+            offset (int): The starting byte offset to read from.
+            size (int): The maximum number of bytes to read.
+
+        Returns:
+            bytes: The requested chunk of data, or None if the buffer doesn't exist or an error occurs.
+        """
+        with self.lock:
+            if key not in self.buffers:
+                logger.warning(f"read_chunk called on non-existent buffer {key}")
+                return None
+            
+            buffer = self.buffers[key]
+            if not buffer or buffer.closed:
+                logger.error(f"read_chunk attempted on closed or invalid buffer for {key}")
+                # Clean up potentially broken buffer reference
+                if key in self.buffers: del self.buffers[key]
+                return None
+                
+            try:
+                current_size = self.get_size(key) # Use internal get_size to check bounds
+                if offset >= current_size:
+                    logger.debug(f"read_chunk for {key}: offset {offset} is beyond current size {current_size}")
+                    return b"" # Read past EOF
+                    
+                buffer.seek(offset)
+                # Calculate how much to actually read, respecting EOF
+                bytes_remaining = current_size - offset
+                read_size = min(size, bytes_remaining)
+                
+                if read_size <= 0:
+                    logger.debug(f"read_chunk for {key}: calculated read_size is {read_size} at offset {offset}")
+                    return b"" # Nothing to read
+
+                logger.debug(f"read_chunk for {key}: Reading {read_size} bytes from offset {offset}")
+                data_chunk = buffer.read(read_size)
+                
+                if len(data_chunk) != read_size:
+                    # This might happen if the file was changed concurrently, log a warning
+                    logger.warning(f"read_chunk for {key}: Expected to read {read_size} bytes but got {len(data_chunk)}")
+                
+                return data_chunk
+                
+            except Exception as e:
+                logger.error(f"Error during read_chunk for key {key} at offset {offset}, size {size}: {e}", exc_info=True)
+                # Don't return partial data on error, return None to indicate failure
+                return None 
