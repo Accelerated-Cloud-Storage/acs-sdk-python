@@ -89,9 +89,9 @@ class ACSClient:
             ('grpc.http2.max_pings_without_data', 0), # unlimited
             ('grpc.http2.min_time_between_pings_ms', 10000), # 10 seconds
             ('grpc.enable_retries', 1), # enable retries
-            ('grpc.max_connection_idle_ms', 60000), # 1 minute
-            ('grpc.max_connection_age_ms', 3600000), # 1 hour
-            ('grpc.max_connection_age_grace_ms', 5000), # 5 seconds
+            ('grpc.max_connection_idle_ms', 604800000), # 7 days
+            ('grpc.max_connection_age_ms', 86400000), # 24 hours
+            ('grpc.max_connection_age_grace_ms', 300000), # 5 minutes
         ]
         
         self.channel = grpc.secure_channel(self.SERVER_ADDRESS,credentials,options=options)
@@ -597,30 +597,4 @@ class ACSClient:
             self.client.ShareBucket(request)
         except grpc.RpcError as e:
             raise BucketError(f"Failed to share bucket: {e.details()}") from e
-
-    def _re_authenticate(self) -> None:
-        """
-        Re-authenticate the client using current credentials.
-        Intended to be called when an UNAUTHENTICATED error is encountered.
-
-        Raises:
-            ConfigurationError: If loading credentials fails.
-            AuthenticationError: If re-authentication RPC fails.
-        """
-        try:
-            print("Attempting to re-authenticate client...")
-            creds = self._load_credentials()
-            self._authenticate(creds)
-            print("Re-authentication successful.")
-        except (ValueError, yaml.YAMLError) as e:
-            print(f"Failed to load credentials during re-authentication: {e}")
-            raise ConfigurationError(f"Failed to load credentials during re-authentication: {e}") from e
-        except grpc.RpcError as e:
-            print(f"Re-authentication RPC failed: {e}")
-            # Convert gRPC error to AuthenticationError
-            raise AuthenticationError(f"Re-authentication failed: {e.details()}") from e
-        except Exception as e:
-            # Catch any other unexpected errors during re-authentication
-            print(f"Unexpected error during re-authentication: {e}")
-            raise ACSError(f"Unexpected error during re-authentication: {e}") from e
 
