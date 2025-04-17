@@ -90,30 +90,48 @@ def setup_signal_handlers(mountpoint, unmount_func):
     
     return signal_handler
 
-def get_mount_options(foreground=True):
+def get_mount_options(foreground=True, allow_other=False):
     """
     Get standard mount options for FUSE.
     
     This function returns a dictionary of options to use when mounting
-    a FUSE filesystem.
+    a FUSE filesystem, with options set to support memory mapping for ML workloads.
+    Options are optimized for maximum I/O performance.
     
     Args:
         foreground (bool, optional): Run in foreground. Defaults to True.
+        allow_other (bool, optional): Allow other users to access the mount. 
+            Requires 'user_allow_other' in /etc/fuse.conf. Defaults to False.
         
     Returns:
         dict: Dictionary of mount options
     """
-    return {
+    options = {
         'foreground': foreground,
         'nonempty': True,
-        'debug': False,
+        'debug': True,
         'default_permissions': True,
-        'direct_io': False,  
+        # For memory mapping to work, direct_io must be OFF
+        'direct_io': False,
         'rw': True,
         'big_writes': True,
-        'max_read': 1024 * 1024 * 1024,  # 1GB read size
-        'max_write': 1024 * 1024 * 1024,  # 1GB write size
-        'kernel_cache': True,  # Enable kernel caching
-        'auto_cache': True,   # Enable automatic cache management
-        'max_readahead': 1024 * 1024 * 1024,  # 1GB readahead
-    } 
+        # Use extreme buffer sizes for ML workloads
+        'max_read': 1024 * 1024 * 1024,      # 1GB read size 
+        'max_write': 1024 * 1024 * 1024,     # 1GB write size
+        'max_readahead': 1024 * 1024 * 1024, # 1GB readahead
+        # Enable all caching for better performance
+        'kernel_cache': True,  # Important for memory mapping
+        'auto_cache': True,    # Important for read performance
+        'entry_timeout': 3600,  # Cache entry attributes for 1 hour
+        'attr_timeout': 3600,   # Cache file/dir attributes for 1 hour
+        'ac_attr_timeout': 3600, # Cache file attributes on access
+        # Performance tuning
+        'big_writes': True,    # Enable large writes
+        'large_read': True,    # Enable large reads
+    }
+    
+    # Only add allow_other if explicitly requested
+    if allow_other:
+        options['allow_other'] = True
+        
+    return options 

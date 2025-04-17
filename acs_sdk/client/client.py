@@ -89,9 +89,9 @@ class ACSClient:
             ('grpc.http2.max_pings_without_data', 0), # unlimited
             ('grpc.http2.min_time_between_pings_ms', 10000), # 10 seconds
             ('grpc.enable_retries', 1), # enable retries
-            ('grpc.max_connection_idle_ms', 60000), # 1 minute
-            ('grpc.max_connection_age_ms', 3600000), # 1 hour
-            ('grpc.max_connection_age_grace_ms', 5000), # 5 seconds
+            ('grpc.max_connection_idle_ms', 604800000), # 7 days
+            ('grpc.max_connection_age_ms', 86400000), # 24 hours
+            ('grpc.max_connection_age_grace_ms', 300000), # 5 minutes
         ]
         
         self.channel = grpc.secure_channel(self.SERVER_ADDRESS,credentials,options=options)
