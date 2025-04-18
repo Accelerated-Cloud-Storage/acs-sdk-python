@@ -106,11 +106,12 @@ def get_mount_options(foreground=True):
     return {
         'foreground': foreground,
         'nonempty': True,
-        'debug': False,
+        'debug': True,
         'default_permissions': True,
         'direct_io': False,  
         'rw': True,
         'big_writes': True,
+        'large_read': True,
         'max_read': 1024 * 1024 * 1024,  # 1GB read size
         'max_write': 1024 * 1024 * 1024,  # 1GB write size
         'kernel_cache': True,  # Enable kernel caching
