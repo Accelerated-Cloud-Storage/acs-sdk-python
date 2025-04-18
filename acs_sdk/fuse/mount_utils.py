@@ -122,9 +122,9 @@ def get_mount_options(foreground=True, allow_other=False):
         # Enable all caching for better performance
         'kernel_cache': True,  # Important for memory mapping
         'auto_cache': True,    # Important for read performance
-        'entry_timeout': 3600,  # Cache entry attributes for 1 hour
-        'attr_timeout': 3600,   # Cache file/dir attributes for 1 hour
-        'ac_attr_timeout': 3600, # Cache file attributes on access
+        #'entry_timeout': 3600,  # Cache entry attributes for 1 hour
+        #'attr_timeout': 3600,   # Cache file/dir attributes for 1 hour
+        #'ac_attr_timeout': 3600, # Cache file attributes on access
         # Performance tuning
         'big_writes': True,    # Enable large writes
         'large_read': True,    # Enable large reads
