@@ -16,27 +16,44 @@ import weakref
 import os
 import tempfile
 import shutil
+import math
 
 # Buffer configuration
-FIXED_TTL = 3600  # 60 minutes TTL for all files
+MIN_TTL = 60  # 1 minute TTL for small files (≤ 1KB)
+MAX_TTL = 36000  # 600 minutes (10 hours) TTL for large files (≥ 100GB)
+MIN_SIZE = 1024  # 1 KB
+MAX_SIZE = 100 * 1024 * 1024 * 1024  # 100 GB
 # --- Spool Size ---
 # Spool to disk after 10GB in RAM for buffer entries
 DEFAULT_SPOOL_MAX_SIZE = 10 * 1024 * 1024 * 1024 
 
 def calculate_ttl(size: int) -> int:
     """
-    Calculate TTL for buffer entries.
+    Calculate dynamic TTL for buffer entries based on file size.
     
-    For ML workloads, we use a fixed high TTL for all files regardless of size
-    to maximize cache retention and performance.
+    Uses logarithmic scaling between min and max TTL values:
+    - Files ≤ 1 KB: 1 minute TTL
+    - Files ≥ 100 GB: 600 minutes TTL
+    - Files in between: logarithmically scaled
     
     Args:
-        size (int): Size of the file in bytes (ignored in ML-optimized version)
+        size (int): Size of the file in bytes
         
     Returns:
-        int: TTL in seconds (fixed value)
+        int: TTL in seconds, dynamically calculated based on size
     """
-    return FIXED_TTL
+    if size <= MIN_SIZE:
+        return MIN_TTL
+    elif size >= MAX_SIZE:
+        return MAX_TTL
+    
+    # Calculate logarithmic scale factor
+    # log(size) - log(MIN_SIZE) gives us a value between 0 and log(MAX_SIZE/MIN_SIZE)
+    # We normalize this to 0-1 by dividing by log(MAX_SIZE/MIN_SIZE)
+    # Then multiply by (MAX_TTL - MIN_TTL) and add MIN_TTL
+    scale = (math.log(size) - math.log(MIN_SIZE)) / (math.log(MAX_SIZE) - math.log(MIN_SIZE))
+    ttl = MIN_TTL + scale * (MAX_TTL - MIN_TTL)
+    return int(ttl)
 
 class BufferEntry:
     """
@@ -58,7 +75,7 @@ class BufferEntry:
         """
         self.last_access = time.time()
         self.timer = None
-        self.ttl = FIXED_TTL
+        self.ttl = calculate_ttl(len(data))
         
         # Create a SpooledTemporaryFile to hold the data
         self.spooled_file = tempfile.SpooledTemporaryFile(
@@ -142,7 +159,7 @@ class ReadBuffer:
     
     This class provides a memory cache for file contents to avoid repeated
     requests to the object storage. Entries are automatically expired based
-    on their access patterns and memory pressure.
+    on their size and access patterns.
     
     Attributes:
         buffer (dict): Dictionary mapping keys to BufferEntry objects
@@ -206,7 +223,7 @@ class ReadBuffer:
 
     def put(self, key: str, data: bytes) -> None:
         """
-        Add data to buffer with TTL and memory management using BufferEntry.
+        Add data to buffer with dynamic TTL based on size and memory management using BufferEntry.
         
         Args:
             key (str): The key identifying the file
@@ -241,6 +258,7 @@ class ReadBuffer:
                  logger.error(f"Failed to create BufferEntry for key {key}: {e}", exc_info=True)
                  return # Don't proceed if entry creation fails
 
+            # Set up timer with dynamically calculated TTL
             entry.timer = threading.Timer(entry.ttl, lambda: self.remove(key))
             entry.timer.daemon = True
             entry.timer.start()

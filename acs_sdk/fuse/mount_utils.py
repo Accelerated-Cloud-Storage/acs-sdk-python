@@ -96,7 +96,8 @@ def get_mount_options(foreground=True, allow_other=False):
     
     This function returns a dictionary of options to use when mounting
     a FUSE filesystem, with options set to support memory mapping for ML workloads.
-    Options are optimized for maximum I/O performance.
+    Options are optimized for maximum I/O performance with aggressive caching and
+    large buffer sizes suitable for high-performance computing and ML workloads.
     
     Args:
         foreground (bool, optional): Run in foreground. Defaults to True.
@@ -106,28 +107,44 @@ def get_mount_options(foreground=True, allow_other=False):
     Returns:
         dict: Dictionary of mount options
     """
+    # Calculate optimal buffer sizes
+    # Use 2GB for read/write buffers on modern systems
+    BUFFER_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
+    # Use 4GB readahead for sequential access optimization
+    READAHEAD_SIZE = 4 * 1024 * 1024 * 1024  # 4GB
+    # Extended timeouts for better caching (24 hours)
+    ATTR_TIMEOUT = 24 * 3600  # 24 hours
+    
     options = {
         'foreground': foreground,
         'nonempty': True,
         'debug': True,
         'default_permissions': True,
-        # For memory mapping to work, direct_io must be OFF
-        'direct_io': False,
-        'rw': True,
-        'big_writes': True,
-        # Use extreme buffer sizes for ML workloads
-        'max_read': 1024 * 1024 * 1024,      # 1GB read size 
-        'max_write': 1024 * 1024 * 1024,     # 1GB write size
-        'max_readahead': 1024 * 1024 * 1024, # 1GB readahead
-        # Enable all caching for better performance
-        'kernel_cache': True,  # Important for memory mapping
-        'auto_cache': True,    # Important for read performance
-        #'entry_timeout': 3600,  # Cache entry attributes for 1 hour
-        #'attr_timeout': 3600,   # Cache file/dir attributes for 1 hour
-        #'ac_attr_timeout': 3600, # Cache file attributes on access
-        # Performance tuning
-        'big_writes': True,    # Enable large writes
-        'large_read': True,    # Enable large reads
+        # Core performance options
+        'direct_io': False,    # Must be OFF for memory mapping
+        'kernel_cache': True,  # Enable kernel-level caching
+        'auto_cache': True,    # Enable automatic caching
+        'rw': True,           # Enable read-write mode
+        
+        # Enhanced I/O options
+        'big_writes': True,    # Enable large write operations
+        'large_read': True,    # Enable large read operations
+        'hard_remove': True,   # Improve rename/unlink operations
+        'max_read': BUFFER_SIZE,
+        'max_write': BUFFER_SIZE,
+        'max_readahead': READAHEAD_SIZE,
+        
+        # Aggressive caching timeouts
+        'entry_timeout': ATTR_TIMEOUT,      # Cache directory entries
+        'negative_timeout': ATTR_TIMEOUT,   # Cache negative lookups
+        'attr_timeout': ATTR_TIMEOUT,       # Cache file/dir attributes
+        'ac_attr_timeout': ATTR_TIMEOUT,    # Cache file attributes on access
+        
+        # Additional optimizations
+        'splice_read': True,   # Use splice for better read performance
+        'splice_write': True,  # Use splice for better write performance
+        'splice_move': True,   # Use splice for better move operations
+        'atomic_o_trunc': True,  # Enable atomic truncation
     }
     
     # Only add allow_other if explicitly requested

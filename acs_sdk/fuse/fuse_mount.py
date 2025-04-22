@@ -57,39 +57,112 @@ class ACSFuse(Operations):
         """
         Initialize the FUSE filesystem with ACS client.
         
+        If the bucket doesn't exist, creates it in us-east-1 region.
+        
         Args:
             bucket_name (str): Name of the bucket to mount
         
         Raises:
-            ValueError: If the bucket cannot be accessed
+            ValueError: If the bucket cannot be created or accessed
         """
         logger.info(f"Initializing ACSFuse with bucket: {bucket_name}")
         start_time = time.time()
         
-        # Get bucket region and create session with it
-        temp_client = ACSClient(Session())
+        # Start with a client in us-east-1 (default region for bucket creation)
+        temp_client = ACSClient(Session(region="us-east-1"))
         
-        client_start = time.time()
-        bucket_info = temp_client.head_bucket(bucket_name)
-        logger.info(f"head_bucket call completed in {time.time() - client_start:.4f} seconds")
+        try:
+            # Try to get bucket info
+            client_start = time.time()
+            bucket_info = temp_client.head_bucket(bucket_name)
+            logger.info(f"Found existing bucket in region {bucket_info.region}")
+            logger.info(f"head_bucket call completed in {time.time() - client_start:.4f} seconds")
+            
+        except BucketError as e:
+            if "does not exist" in str(e) or "not found" in str(e).lower():
+                # Bucket doesn't exist, create it in us-east-1
+                logger.info(f"Bucket {bucket_name} does not exist. Creating in us-east-1...")
+                try:
+                    client_start = time.time()
+                    temp_client.create_bucket(bucket_name)
+                    logger.info(f"Successfully created bucket {bucket_name} in us-east-1")
+                    bucket_info = temp_client.head_bucket(bucket_name)
+                    logger.info(f"Bucket creation and verification completed in {time.time() - client_start:.4f} seconds")
+                except Exception as create_e:
+                    logger.error(f"Failed to create bucket {bucket_name}: {str(create_e)}")
+                    temp_client.close()
+                    raise ValueError(f"Failed to create bucket {bucket_name}: {str(create_e)}")
+            else:
+                # Some other bucket error occurred
+                logger.error(f"Failed to access bucket {bucket_name}: {str(e)}")
+                temp_client.close()
+                raise ValueError(f"Failed to access bucket {bucket_name}: {str(e)}")
+        except Exception as e:
+            # Handle any other unexpected errors
+            logger.error(f"Unexpected error while accessing bucket {bucket_name}: {str(e)}")
+            temp_client.close()
+            raise ValueError(f"Unexpected error while accessing bucket {bucket_name}: {str(e)}")
         
-        self.client = ACSClient(Session(region=bucket_info.region)) # Create client with bucket region
-        self.bucket = bucket_name # Each mount is tied to one bucket
+        # Create the main client with the correct region
+        self.client = ACSClient(Session(region=bucket_info.region))
+        self.bucket = bucket_name
         
         # Initialize buffers
         self.read_buffer = ReadBuffer()
         self.write_buffer = WriteBuffer()
 
-        # Verify bucket exists
+        # Verify we can access the bucket with the new client
         try:
             client_start = time.time()
             self.client.head_bucket(bucket_name)
-            logger.info(f"Verification head_bucket call completed in {time.time() - client_start:.4f} seconds")
+            logger.info(f"Final bucket verification completed in {time.time() - client_start:.4f} seconds")
         except Exception as e:
-            logger.error(f"Failed to access bucket {bucket_name}: {str(e)}")
-            raise ValueError(f"Failed to access bucket {bucket_name}: {str(e)}")
+            logger.error(f"Failed to verify bucket access with new client: {str(e)}")
+            temp_client.close()
+            raise ValueError(f"Failed to verify bucket access: {str(e)}")
+            
+        # Close the temporary client
+        temp_client.close()
             
         time_function("__init__", start_time)
+
+    def __del__(self):
+        """
+        Destructor to clean up resources.
+        
+        Ensures proper cleanup of resources by:
+        1. Flushing any pending writes to storage
+        2. Clearing read and write buffers
+        3. Closing the ACS client connection
+        """
+        logger.info("Cleaning up ACSFuse resources...")
+        try:
+            # Flush and clean up write buffers first
+            if hasattr(self, 'write_buffer'):
+                # Get a list of all buffered files
+                buffered_files = list(self.write_buffer.buffers.keys())
+                for key in buffered_files:
+                    try:
+                        # Convert key to path and flush using existing method
+                        path = '/' + key if not key.startswith('/') else key
+                        self._flush_buffer(path)
+                        logger.debug(f"Flushed and removed buffer for {key}")
+                    except Exception as e:
+                        logger.error(f"Error during write buffer cleanup for {key}: {e}", exc_info=True)
+
+            # Clear read buffer
+            if hasattr(self, 'read_buffer'):
+                self.read_buffer.clear()
+                logger.debug("Read buffer cleared")
+
+            # Close the client connection
+            if hasattr(self, 'client'):
+                self.client.close()
+                logger.info("ACS client connection closed")
+        except Exception as e:
+            logger.error(f"Error during ACSFuse cleanup: {e}", exc_info=True)
+        finally:
+            logger.info("ACSFuse cleanup completed")
 
     def _get_path(self, path):
         """
