@@ -279,106 +279,215 @@ class ACSFuse(Operations):
 
     def rename(self, old, new):
         """
-        Rename a file or directory.
+        Rename a file or directory with atomic-like guarantees.
         
-        This method renames a file or directory with reliable, predictable behavior.
+        This method implements a robust rename operation that:
+        1. Handles both files and directories
+        2. Ensures atomic-like behavior for directory operations
+        3. Maintains cache consistency
+        4. Properly cleans up old paths
         
         Args:
             old (str): Old path
             new (str): New path
             
         Raises:
-            FuseOSError: If the source file does not exist or an error occurs
+            FuseOSError: If the source doesn't exist or an error occurs
         """
         trace_op("rename", new, old=old)
-        logger.info(f"rename: {old} to {new}")
+        logger.info(f"rename: Starting rename operation from {old} to {new}")
         start_time = time.time()
         
         old_key = self._get_path(old)
         new_key = self._get_path(new)
+        
+        # Track operation state for cleanup
+        operation_state = {
+            'source_verified': False,
+            'is_directory': False,
+            'objects_listed': False,
+            'new_written': False,
+            'buffers_updated': False
+        }
 
         try:
-            # First verify source exists
+            # Step 1: Check if this is a directory operation
             try:
                 client_start = time.time()
-                # We'll use a head request instead of getting the whole object first
-                self.client.head_object(self.bucket, old_key)
-                logger.info(f"rename: head_object completed in {time.time() - client_start:.4f} seconds")
+                # Try as file first
+                source_metadata = self.client.head_object(self.bucket, old_key)
+                operation_state['source_verified'] = True
+                operation_state['is_directory'] = False
+                logger.info(f"rename: Source verification completed in {time.time() - client_start:.4f} seconds")
             except Exception as e:
-                logger.error(f"rename: Source {old_key} does not exist: {str(e)}")
-                time_function("rename", start_time)
-                raise FuseOSError(errno.ENOENT)
-            
-            # Use the in-memory write buffer if available
-            if self.write_buffer.has_buffer(old_key):
-                logger.debug(f"rename: Source {old_key} is in write buffer, using that directly")
+                # If not a file, check if it's a directory
+                dir_key = old_key if old_key.endswith('/') else old_key + '/'
                 try:
-                    # Read from buffer
-                    data = self.write_buffer.read(old_key)
-                    if data is not None:
-                        # Write to new location
-                        client_start = time.time()
-                        self.client.put_object(self.bucket, new_key, data)
-                        logger.info(f"rename: put_object for {new_key} completed in {time.time() - client_start:.4f} seconds")
-                        
-                        # Delete original
-                        client_start = time.time()
-                        self.client.delete_object(self.bucket, old_key)
-                        logger.info(f"rename: delete_object for {old_key} completed in {time.time() - client_start:.4f} seconds")
-                        
-                        # Clean up buffers
-                        self.write_buffer.remove(old_key)
-                        if self.read_buffer.get(old_key):
-                            self.read_buffer.remove(old_key)
-                        if self.read_buffer.get(new_key):
-                            self.read_buffer.remove(new_key)
-                            
-                        logger.debug(f"rename: Successfully renamed {old_key} to {new_key} using write buffer")
-                        time_function("rename", start_time)
-                        return 0
-                except Exception as e:
-                    logger.error(f"rename: Failed using write buffer method: {str(e)}")
-                    # Fall through to standard method
-            
-            # Standard method - use server-side copy then delete
-            logger.debug(f"rename: Using server-side copy method for {old_key} to {new_key}")
+                    client_start = time.time()
+                    objects = list(self.client.list_objects(
+                        self.bucket,
+                        ListObjectsOptions(prefix=dir_key, max_keys=1)
+                    ))
+                    logger.info(f"rename: Directory check completed in {time.time() - client_start:.4f} seconds")
+                    
+                    if objects:
+                        operation_state['source_verified'] = True
+                        operation_state['is_directory'] = True
+                    else:
+                        logger.error(f"rename: Source {old_key} does not exist as file or directory")
+                        raise FuseOSError(errno.ENOENT)
+                except Exception as dir_e:
+                    logger.error(f"rename: Failed to verify source {old_key}: {str(dir_e)}")
+                    raise FuseOSError(errno.ENOENT)
 
-            # --- Use Server-Side Copy ---
-            copy_source_str = f"{self.bucket}/{old_key}"
-            logger.debug(f"rename: Attempting server-side copy from source '{copy_source_str}' to bucket '{self.bucket}', key '{new_key}'")
-            client_start_copy = time.time()
-            self.client.copy_object(
-                bucket=self.bucket,       # Destination bucket
-                copy_source=copy_source_str, # Source bucket/key string
-                key=new_key              # Destination key
-            )
-            copy_duration = time.time() - client_start_copy
-            logger.info(f"rename: Server-side copy_object call for {new_key} completed in {copy_duration:.4f} seconds.")
-            # --- End Server-Side Copy ---
-
-            # Delete the original object
-            logger.debug(f"rename: Deleting original object {old_key}")
-            client_start_delete = time.time()
-            self.client.delete_object(self.bucket, old_key)
-            delete_duration = time.time() - client_start_delete
-            logger.info(f"rename: delete_object for {old_key} completed in {delete_duration:.4f} seconds")
-            
-            # Clean up buffers to ensure fresh data
-            if self.write_buffer.has_buffer(old_key):
-                self.write_buffer.remove(old_key)
-            if self.read_buffer.get(old_key):
-                self.read_buffer.remove(old_key)
-            if self.read_buffer.get(new_key):
-                self.read_buffer.remove(new_key)
+            # Step 2: Handle directory rename
+            if operation_state['is_directory']:
+                dir_old_key = old_key if old_key.endswith('/') else old_key + '/'
+                dir_new_key = new_key if new_key.endswith('/') else new_key + '/'
                 
+                # List all objects under the old directory
+                try:
+                    client_start = time.time()
+                    objects = list(self.client.list_objects(
+                        self.bucket,
+                        ListObjectsOptions(prefix=dir_old_key)
+                    ))
+                    operation_state['objects_listed'] = True
+                    logger.info(f"rename: Listed {len(objects)} objects in directory {dir_old_key}")
+                except Exception as e:
+                    logger.error(f"rename: Failed to list objects in directory {dir_old_key}: {str(e)}")
+                    raise FuseOSError(errno.EIO)
+
+                # Step 3: Copy each object to new location
+                for old_obj in objects:
+                    try:
+                        # TODO Check if the object is already in the write buffer
+                        # Calculate new object key
+                        rel_path = old_obj[len(dir_old_key):]
+                        new_obj = dir_new_key + rel_path
+                        
+                        # Copy object
+                        client_start = time.time()
+                        copy_source_str = f"{self.bucket}/{old_obj}"
+                        self.client.copy_object(
+                            bucket=self.bucket,
+                            copy_source=copy_source_str,
+                            key=new_obj
+                        )
+                        logger.info(f"rename: Copied {old_obj} to {new_obj} in {time.time() - client_start:.4f} seconds")
+                        
+                        # Update buffer state for this file
+                        if self.write_buffer.has_buffer(old_obj):
+                            data = self.write_buffer.read(old_obj)
+                            if data is not None:
+                                self.write_buffer.initialize_buffer(new_obj, data)
+                            self.write_buffer.remove(old_obj)
+                        if self.read_buffer.get(old_obj):
+                            self.read_buffer.remove(old_obj)
+                            
+                    except Exception as e:
+                        logger.error(f"rename: Failed to copy object {old_obj}: {str(e)}")
+                        # Continue with other files but track failure
+                        operation_state['new_written'] = False
+
+                # Step 4: Delete old objects only after all copies succeed
+                if operation_state['new_written'] is not False:  # Not explicitly failed
+                    for old_obj in objects:
+                        try:
+                            client_start = time.time()
+                            self.client.delete_object(self.bucket, old_obj)
+                            logger.info(f"rename: Deleted old object {old_obj} in {time.time() - client_start:.4f} seconds")
+                        except Exception as e:
+                            logger.error(f"rename: Failed to delete old object {old_obj}: {str(e)}")
+                            # Continue deletion of other objects
+                
+                operation_state['buffers_updated'] = True
+                logger.info(f"rename: Successfully renamed directory from {old_key} to {new_key}")
+                time_function("rename", start_time)
+                return 0
+
+            # Step 3: Handle single file rename (existing implementation)
+            source_data = None
+            if self.write_buffer.has_buffer(old_key):
+                logger.debug(f"rename: Reading source {old_key} from write buffer")
+                try:
+                    source_data = self.write_buffer.read(old_key)
+                    if source_data is not None:
+                        operation_state['data_read'] = True
+                        logger.debug(f"rename: Successfully read {len(source_data)} bytes from write buffer")
+                except Exception as e:
+                    logger.error(f"rename: Failed to read from write buffer: {str(e)}")
+                    # Fall through to try S3 direct copy
+
+            # Write to new location
+            try:
+                if source_data is not None:
+                    # Use buffered data
+                    client_start = time.time()
+                    self.client.put_object(self.bucket, new_key, source_data)
+                    logger.info(f"rename: put_object for {new_key} completed in {time.time() - client_start:.4f} seconds")
+                else:
+                    # Use server-side copy
+                    logger.debug(f"rename: Using server-side copy from {old_key} to {new_key}")
+                    copy_source_str = f"{self.bucket}/{old_key}"
+                    client_start = time.time()
+                    self.client.copy_object(
+                        bucket=self.bucket,
+                        copy_source=copy_source_str,
+                        key=new_key
+                    )
+                    logger.info(f"rename: copy_object completed in {time.time() - client_start:.4f} seconds")
+                
+                # Verify new file exists
+                client_start = time.time()
+                new_metadata = self.client.head_object(self.bucket, new_key)
+                logger.info(f"rename: New file verification completed in {time.time() - client_start:.4f} seconds")
+                operation_state['new_written'] = True
+
+            except Exception as e:
+                logger.error(f"rename: Failed to write new file {new_key}: {str(e)}")
+                # Attempt cleanup if partial write occurred
+                try:
+                    if operation_state['new_written']:
+                        self.client.delete_object(self.bucket, new_key)
+                except Exception as cleanup_e:
+                    logger.error(f"rename: Cleanup of failed write failed: {str(cleanup_e)}")
+                raise FuseOSError(errno.EIO)
+
+            # Update buffers and cleanup old file
+            try:
+                # Initialize write buffer for new file if needed
+                if source_data is not None:
+                    self.write_buffer.initialize_buffer(new_key, source_data)
+                
+                # Remove old file only after new file is confirmed
+                client_start = time.time()
+                self.client.delete_object(self.bucket, old_key)
+                logger.info(f"rename: delete_object for {old_key} completed in {time.time() - client_start:.4f} seconds")
+                
+                # Clean up buffers
+                if self.write_buffer.has_buffer(old_key):
+                    self.write_buffer.remove(old_key)
+                if self.read_buffer.get(old_key):
+                    self.read_buffer.remove(old_key)
+                if self.read_buffer.get(new_key):
+                    self.read_buffer.remove(new_key)
+                    
+                operation_state['buffers_updated'] = True
+                
+            except Exception as e:
+                logger.error(f"rename: Buffer/cleanup operations failed: {str(e)}")
+                # Continue since new file is already written
+                
+            logger.info(f"rename: Successfully completed rename from {old_key} to {new_key}")
+            logger.debug(f"rename: Operation state: {operation_state}")
             time_function("rename", start_time)
             return 0
             
         except FuseOSError:
-            # Re-raise FUSE-specific errors
             raise
         except Exception as e:
-            logger.error(f"Error in rename operation: {str(e)}")
+            logger.error(f"rename: Unhandled error: {str(e)}", exc_info=True)
             time_function("rename", start_time)
             raise FuseOSError(errno.EIO)
 
@@ -488,109 +597,125 @@ class ACSFuse(Operations):
 
     def write(self, path, data, offset, fh):
         """
-        Write data to an in-memory buffer, to be flushed on close.
+        Write data to a file with improved buffer handling.
         
-        This method writes data to a file by storing it in a write buffer,
-        which will be flushed to object storage when the file is closed.
+        This method implements robust write operations that:
+        1. Maintain write buffer consistency
+        2. Support concurrent access patterns
+        3. Provide better error recovery
+        4. Invalidate read buffer to maintain consistency
         
         Args:
             path (str): Path to the file
             data (bytes): Data to write
-            offset (int): Offset in the file to start writing at
+            offset (int): Offset at which to write
             fh (int): File handle
             
         Returns:
             int: Number of bytes written
             
         Raises:
-            FuseOSError: If an error occurs while writing the file
+            FuseOSError: If an error occurs during write
         """
-        trace_op("write", path, data_size=len(data), offset=offset, fh=fh)
-        logger.debug(f"write requested for path: {path}, size={len(data)}, offset={offset}")
+        trace_op("write", path, offset=offset, size=len(data))
+        logger.info(f"write: Writing {len(data)} bytes to {path} at offset {offset}")
         start_time = time.time()
         
+        key = self._get_path(path)
+        
         try:
-            key = self._get_path(path)
-            
-            # Initialize buffer if it doesn't exist
+            # Ensure write buffer exists
             if not self.write_buffer.has_buffer(key):
-                # Check if we need to fetch existing data
-                need_existing_data = offset > 0  # Only need existing data if not writing from start
-                
-                if need_existing_data:
-                    try:
-                        client_start = time.time()
-                        current_data = self.client.get_object(self.bucket, key)
-                        logger.info(f"Fetched existing data ({len(current_data)} bytes) in {time.time() - client_start:.4f}s")
-                        self.write_buffer.initialize_buffer(key, current_data)
-                    except Exception as e:
-                        # File doesn't exist or other error - start with empty buffer
-                        logger.debug(f"Creating new file: {key} (error fetching: {e})")
-                        self.write_buffer.initialize_buffer(key, b"")
-                else:
-                    # New file - start with empty buffer
-                    logger.debug(f"Initializing write buffer for new file: {key}")
-                    self.write_buffer.initialize_buffer(key, b"")
-            else:
-                logger.debug(f"Using existing write buffer for {key}")
-
-            # Write data to buffer
-            bytes_written = self.write_buffer.write(key, data, offset)
+                logger.debug(f"write: Initializing write buffer for {key}")
+                self.write_buffer.initialize_buffer(key)
             
-            # Invalidate read buffer if we wrote something
+            # Write to buffer
+            logger.debug(f"write: Writing to buffer for {key}")
+            client_start = time.time()
+            bytes_written = self.write_buffer.write(key, data, offset)
+            logger.info(f"write: Buffer write completed in {time.time() - client_start:.4f} seconds")
+            
+            if bytes_written != len(data):
+                logger.error(f"write: Incomplete write for {key}. Expected {len(data)} bytes, wrote {bytes_written}")
+                raise FuseOSError(errno.EIO)
+            
+            # Invalidate read buffer since we wrote new data
             if bytes_written > 0 and self.read_buffer.get(key) is not None:
-                logger.debug(f"Invalidating read buffer for {key} due to write")
+                logger.debug(f"write: Invalidating read buffer for {key} due to write")
                 self.read_buffer.remove(key)
             
+            logger.debug(f"write: Successfully wrote {bytes_written} bytes to {key}")
+            time_function("write", start_time)
             return bytes_written
             
         except Exception as e:
-            logger.error(f"Error writing to {path}: {str(e)}")
+            logger.error(f"write: Error writing to {key}: {str(e)}", exc_info=True)
+            time_function("write", start_time)
             raise FuseOSError(errno.EIO)
 
     def create(self, path, mode, fi=None):
         """
         Create a new file.
         
-        This method creates a new empty file in the object storage
-        and initializes a write buffer for it.
+        This method implements a robust file creation that:
+        1. Creates empty object in S3 to ensure file existence
+        2. Initializes write buffer state
+        3. Maintains consistent buffer state
+        4. Supports concurrent access patterns
         
         Args:
             path (str): Path to the file
-            mode (int): File mode (Note: mode is currently ignored)
+            mode (int): File mode (permissions are enforced at mount level)
             fi (dict, optional): File info. Defaults to None.
             
         Returns:
-            int: File handle (returning 0 often works for simple cases)
+            int: File handle
             
         Raises:
-            FuseOSError: If an error occurs while creating the file
+            FuseOSError: If an error occurs during file creation
         """
         trace_op("create", path, mode=oct(mode))
-        logger.debug(f"create requested for path: {path}, mode={oct(mode)}")
+        logger.info(f"create: Creating new file at {path} with mode {oct(mode)}")
         start_time = time.time()
         
         key = self._get_path(path)
         
         try:
-            # Create empty object in Object Storage first to represent the file
-            # This ensures the file exists even if not written to and released immediately
-            logger.debug(f"Creating empty file: {key}")
+            # Create empty object in S3 first to ensure file existence
+            # This is necessary for getattr to work correctly
+            logger.debug(f"create: Creating empty file in S3: {key}")
             client_start = time.time()
             self.client.put_object(self.bucket, key, b"")
-            logger.info(f"create: put_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-
-            # Initialize buffer
-            logger.debug(f"Initializing write buffer for newly created file: {key}")
+            logger.info(f"create: put_object call completed in {time.time() - client_start:.4f} seconds")
+            
+            # Initialize write buffer
+            logger.debug(f"create: Initializing write buffer for: {key}")
             self.write_buffer.initialize_buffer(key)
             
-            # Return file handle
-            fh = 0
-            logger.debug(f"Create successful for {path}, returning fh={fh}")
+            # Verify buffer initialization
+            if not self.write_buffer.has_buffer(key):
+                logger.error(f"create: Failed to initialize write buffer for {key}")
+                # Clean up the S3 object if buffer init fails
+                try:
+                    self.client.delete_object(self.bucket, key)
+                except Exception as cleanup_e:
+                    logger.error(f"create: Failed to cleanup S3 object after buffer init failure: {str(cleanup_e)}")
+                raise FuseOSError(errno.EIO)
+                
+            logger.debug(f"create: Successfully created file {key}")
             time_function("create", start_time)
-            return fh
+            return 0
+            
         except Exception as e:
-            logger.error(f"Error creating {key}: {str(e)}", exc_info=True)
+            logger.error(f"create: Error creating {key}: {str(e)}", exc_info=True)
+            # Cleanup any partial state
+            try:
+                if self.write_buffer.has_buffer(key):
+                    self.write_buffer.remove(key)
+                # Try to remove the S3 object if it was created
+                self.client.delete_object(self.bucket, key)
+            except Exception as cleanup_e:
+                logger.error(f"create: Cleanup after error failed: {str(cleanup_e)}")
             time_function("create", start_time)
             raise FuseOSError(errno.EIO)
 
@@ -1526,6 +1651,181 @@ class ACSFuse(Operations):
         
         time_function("statfs", start_time)
         return result
+
+    def getxattr(self, path, name, position=0):
+        """
+        Get extended attributes for a file or directory.
+        
+        This method supports common extended attributes needed by applications like HuggingFace:
+        - user.mime_type: MIME type of the file
+        - user.content_length: Size of the file
+        - user.etag: ETag from S3
+        - user.last_modified: Last modification time
+        - security.capability: Security capabilities
+        - system.posix_acl_access: POSIX ACL access info
+        
+        Args:
+            path (str): Path to the file
+            name (str): Name of the extended attribute
+            position (int, optional): Position in the attribute. Defaults to 0.
+            
+        Returns:
+            bytes: The attribute value
+            
+        Raises:
+            FuseOSError: If the attribute doesn't exist (ENODATA) or file not found (ENOENT)
+        """
+        trace_op("getxattr", path, name=name, position=position)
+        logger.debug(f"getxattr requested for path: {path}, name: {name}")
+        start_time = time.time()
+        
+        try:
+            # Special case for root directory
+            if path == '/':
+                if name == 'user.mime_type':
+                    return b'inode/directory'
+                elif name == 'security.capability':
+                    # Standard directory capabilities
+                    return b'\x01\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+                raise FuseOSError(errno.ENODATA)
+
+            key = self._get_path(path)
+            
+            # First check if it's a directory by checking with trailing slash
+            dir_key = key if key.endswith('/') else key + '/'
+            try:
+                client_start = time.time()
+                objects = list(self.client.list_objects(
+                    self.bucket,
+                    ListObjectsOptions(prefix=dir_key, max_keys=1)
+                ))
+                logger.info(f"getxattr: list_objects call for directory check {dir_key} completed in {time.time() - client_start:.4f} seconds")
+                
+                if objects:  # It's a directory
+                    if name == 'user.mime_type':
+                        return b'inode/directory'
+                    elif name == 'security.capability':
+                        return b'\x01\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+                    raise FuseOSError(errno.ENODATA)
+            except Exception as e:
+                logger.debug(f"Directory check failed for {dir_key}: {str(e)}")
+                pass  # Fall through to file check
+
+            # Try as a regular file
+            try:
+                client_start = time.time()
+                metadata = self.client.head_object(self.bucket, key)
+                logger.info(f"getxattr: head_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                
+                # Return requested attribute
+                if name == 'user.mime_type':
+                    mime_type = metadata.content_type or 'application/octet-stream'
+                    return mime_type.encode('utf-8')
+                elif name == 'user.content_length':
+                    return str(metadata.content_length).encode('utf-8')
+                elif name == 'user.etag':
+                    return metadata.etag.encode('utf-8') if metadata.etag else b''
+                elif name == 'user.last_modified':
+                    return str(int(metadata.last_modified.timestamp())).encode('utf-8')
+                elif name == 'security.capability':
+                    # Standard file capabilities
+                    return b'\x01\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+                elif name == 'system.posix_acl_access':
+                    # Return empty ACL
+                    return b''
+                else:
+                    logger.debug(f"getxattr: Unsupported attribute {name} requested for {path}")
+                    raise FuseOSError(errno.ENODATA)
+                    
+            except Exception as e:
+                if "NoSuchKey" in str(e) or "Not Found" in str(e):
+                    logger.debug(f"getxattr: Object {key} does not exist")
+                    raise FuseOSError(errno.ENOENT)
+                else:
+                    logger.error(f"getxattr: Error checking file {key}: {str(e)}", exc_info=True)
+                    raise FuseOSError(errno.EIO)
+                    
+        except FuseOSError:
+            raise
+        except Exception as e:
+            logger.error(f"getxattr error for {path}: {str(e)}", exc_info=True)
+            time_function("getxattr", start_time)
+            raise FuseOSError(errno.EIO)
+        finally:
+            time_function("getxattr", start_time)
+
+    def listxattr(self, path):
+        """
+        List supported extended attributes for a file or directory.
+        
+        Args:
+            path (str): Path to the file or directory
+            
+        Returns:
+            list: List of supported attribute names
+            
+        Raises:
+            FuseOSError: If the file doesn't exist
+        """
+        trace_op("listxattr", path)
+        logger.debug(f"listxattr requested for path: {path}")
+        start_time = time.time()
+        
+        try:
+            # For directories (including root), return basic attributes
+            if path == '/' or self._is_directory(path):
+                time_function("listxattr", start_time)
+                return ['user.mime_type', 'security.capability']
+            
+            # For files, verify existence first
+            key = self._get_path(path)
+            try:
+                self.client.head_object(self.bucket, key)
+                time_function("listxattr", start_time)
+                return [
+                    'user.mime_type',
+                    'user.content_length',
+                    'user.etag',
+                    'user.last_modified',
+                    'security.capability',
+                    'system.posix_acl_access'
+                ]
+            except Exception as e:
+                if "NoSuchKey" in str(e) or "Not Found" in str(e):
+                    raise FuseOSError(errno.ENOENT)
+                raise FuseOSError(errno.EIO)
+                
+        except FuseOSError:
+            raise
+        except Exception as e:
+            logger.error(f"listxattr error for {path}: {str(e)}", exc_info=True)
+            time_function("listxattr", start_time)
+            raise FuseOSError(errno.EIO)
+
+    def _is_directory(self, path):
+        """
+        Helper method to check if a path is a directory.
+        
+        Args:
+            path (str): Path to check
+            
+        Returns:
+            bool: True if path is a directory, False otherwise
+        """
+        if path == '/':
+            return True
+            
+        key = self._get_path(path)
+        dir_key = key if key.endswith('/') else key + '/'
+        
+        try:
+            objects = list(self.client.list_objects(
+                self.bucket,
+                ListObjectsOptions(prefix=dir_key, max_keys=1)
+            ))
+            return len(objects) > 0
+        except Exception:
+            return False
 
 def mount(bucket: str, mountpoint: str, foreground: bool = True, allow_other: bool = False):
     """

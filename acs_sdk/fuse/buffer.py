@@ -19,7 +19,6 @@ import shutil
 
 # Buffer configuration
 FIXED_TTL = 3600  # 60 minutes TTL for all files
-MIN_LOG_SIZE = 0  # Only log detailed info for files >10MB
 # --- Spool Size ---
 # Spool to disk after 10GB in RAM for buffer entries
 DEFAULT_SPOOL_MAX_SIZE = 10 * 1024 * 1024 * 1024 
@@ -158,7 +157,6 @@ class ReadBuffer:
         self.buffer = {}  # Simple dict for faster lookups
         self.lock = RLock()  # Reentrant lock for nested operations
         self._total_size = 0  # Track approximate memory usage
-        self._spool_max_size = DEFAULT_SPOOL_MAX_SIZE # Keep track of spool size per entry
         
         # Setup finalizer to clean up timers and files
         self._finalizer = weakref.finalize(self, self._cleanup_resources, self.buffer.copy())
@@ -254,9 +252,7 @@ class ReadBuffer:
             current_entry_size = entry.get_size()
             self._total_size += current_entry_size
             
-            # Only log detailed info for larger files
-            if current_entry_size > MIN_LOG_SIZE:
-                logger.debug(f"Added to read buffer: {key} (size: {current_entry_size/1024/1024:.2f}MB, TTL: {entry.ttl}s)")
+            logger.debug(f"Added to read buffer: {key} (size: {current_entry_size/1024/1024:.2f}MB, TTL: {entry.ttl}s)")
 
     def remove(self, key: str) -> None:
         """
@@ -280,9 +276,7 @@ class ReadBuffer:
                 # Explicitly close the spooled file
                 entry.close()
                 
-                # Only log for larger files
-                if size > MIN_LOG_SIZE:
-                    logger.debug(f"Removed from read buffer: {key} (size: {size/1024/1024:.2f}MB)")
+                logger.debug(f"Removed from read buffer: {key} (size: {size/1024/1024:.2f}MB)")
 
     def clear(self) -> None:
         """Clear all entries from buffer, closing their files."""
@@ -340,8 +334,7 @@ class WriteBuffer:
                     
                 self.buffers[key] = spooled_file
                 
-                if len(data) > MIN_LOG_SIZE:
-                    logger.debug(f"Initialized buffer for {key} with {len(data)/1024/1024:.2f}MB (Spooled)")
+                logger.debug(f"Initialized buffer for {key} with {len(data)/1024/1024:.2f}MB (Spooled)")
             else:
                 # If buffer already exists, maybe clear and re-initialize?
                 # Current behavior: do nothing if exists. Consider if overwrite is needed.
@@ -385,8 +378,7 @@ class WriteBuffer:
                  self._total_size -= (len(data) - bytes_written) 
                  # Consider raising an error?
             
-            if len(data) > MIN_LOG_SIZE:
-                logger.debug(f"Wrote {bytes_written/1024/1024:.2f}MB to buffer for {key} at offset {offset/1024/1024:.2f}MB")
+            logger.debug(f"Wrote {bytes_written/1024/1024:.2f}MB to buffer for {key} at offset {offset/1024/1024:.2f}MB")
             
             # Note: Background flushing logic might need adjustment if based on memory size.
             # SpooledTemporaryFile handles spilling transparently.
@@ -563,57 +555,3 @@ class WriteBuffer:
         with self.lock:
             # Additionally check if the file object is still valid/open? Maybe overkill.
             return key in self.buffers 
-
-    def read_chunk(self, key: str, offset: int, size: int) -> bytes:
-        """
-        Read a specific chunk of data from a SpooledTemporaryFile buffer.
-        This avoids loading the entire file into memory when only a part is needed.
-
-        Args:
-            key (str): The key identifying the file buffer.
-            offset (int): The starting byte offset to read from.
-            size (int): The maximum number of bytes to read.
-
-        Returns:
-            bytes: The requested chunk of data, or None if the buffer doesn't exist or an error occurs.
-        """
-        with self.lock:
-            if key not in self.buffers:
-                logger.warning(f"read_chunk called on non-existent buffer {key}")
-                return None
-            
-            buffer = self.buffers[key]
-            if not buffer or buffer.closed:
-                logger.error(f"read_chunk attempted on closed or invalid buffer for {key}")
-                # Clean up potentially broken buffer reference
-                if key in self.buffers: del self.buffers[key]
-                return None
-                
-            try:
-                current_size = self.get_size(key) # Use internal get_size to check bounds
-                if offset >= current_size:
-                    logger.debug(f"read_chunk for {key}: offset {offset} is beyond current size {current_size}")
-                    return b"" # Read past EOF
-                    
-                buffer.seek(offset)
-                # Calculate how much to actually read, respecting EOF
-                bytes_remaining = current_size - offset
-                read_size = min(size, bytes_remaining)
-                
-                if read_size <= 0:
-                    logger.debug(f"read_chunk for {key}: calculated read_size is {read_size} at offset {offset}")
-                    return b"" # Nothing to read
-
-                logger.debug(f"read_chunk for {key}: Reading {read_size} bytes from offset {offset}")
-                data_chunk = buffer.read(read_size)
-                
-                if len(data_chunk) != read_size:
-                    # This might happen if the file was changed concurrently, log a warning
-                    logger.warning(f"read_chunk for {key}: Expected to read {read_size} bytes but got {len(data_chunk)}")
-                
-                return data_chunk
-                
-            except Exception as e:
-                logger.error(f"Error during read_chunk for key {key} at offset {offset}, size {size}: {e}", exc_info=True)
-                # Don't return partial data on error, return None to indicate failure
-                return None 
