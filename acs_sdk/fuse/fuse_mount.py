@@ -754,6 +754,10 @@ class ACSFuse(Operations):
         key = self._get_path(path)
         
         try:
+            # Invalidate read buffer in case this path existed before
+            logger.debug(f"create: Invalidating read buffer for potential prior {key}")
+            self.read_buffer.remove(key)
+
             # Create empty object in S3 first to ensure file existence
             # This is necessary for getattr to work correctly
             logger.debug(f"create: Creating empty file in S3: {key}")
@@ -1316,6 +1320,10 @@ class ACSFuse(Operations):
                 logger.error(f"Link target object {target_key} does not exist or head failed: {str(e)}", exc_info=True)
                 raise FuseOSError(errno.ENOENT)
 
+            # Invalidate read buffer for the target link name in case it existed before
+            logger.debug(f"Link: Invalidating read buffer for potential prior {new_key}")
+            self.read_buffer.remove(new_key)
+            
             # --- Use Server-Side Copy --- 
             copy_source_str = f"{self.bucket}/{target_key}" # Assuming format bucket/key
             logger.debug(f"Link: Attempting server-side copy from source '{copy_source_str}' to bucket '{self.bucket}', key '{new_key}'")
@@ -1370,12 +1378,6 @@ class ACSFuse(Operations):
             logger.debug(f"Shared lock requested for {path}")
         elif op & fcntl.LOCK_UN:
             logger.debug(f"Unlock requested for {path}")
-        
-        # For unlock operations, invalidate the read buffer to ensure fresh data is fetched
-        if op & fcntl.LOCK_UN:
-            if self.read_buffer.get(key) is not None:
-                logger.debug(f"Unlock: invalidating read buffer for {key}")
-                self.read_buffer.remove(key)
         
         time_function("flock", start_time)
         return 0
@@ -1557,6 +1559,10 @@ class ACSFuse(Operations):
             # The *content* of the symlink file will be the source path
             symlink_content = source.encode('utf-8')
             
+            # Invalidate read buffer for the symlink path in case it existed before
+            logger.debug(f"symlink: Invalidating read buffer for potential prior {target_key}")
+            self.read_buffer.remove(target_key)
+
             # Write the symlink object
             logger.debug(f"Creating symlink object at {target_key} pointing to {source}")
             client_start = time.time()
