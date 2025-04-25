@@ -1314,8 +1314,8 @@ class ACSFuse(Operations):
                  logger.info(f"Flushed empty buffer for {key} in {upload_time:.2f}s")
 
             # Invalidate read buffer entry since file has been updated on storage
-            self.read_buffer.remove(key)
-            
+            # self.read_buffer.remove(key)
+            logger.debug(f"_flush_buffer: Removing read buffer for {key}, not implemented")
         except KeyError:
              logger.warning(f"Attempted to flush non-existent buffer for key: {key} (KeyError)")
         except Exception as e:
@@ -1354,7 +1354,9 @@ class ACSFuse(Operations):
 
                 # Invalidate the read buffer after successful flush
                 if self.read_buffer.get(key):
-                    self.read_buffer.remove(key)
+                    logger.debug(f"fsync: Removing read buffer for {key}, not implemented")
+                    # self.read_buffer.remove(key)
+                    pass
             except Exception as e:
                 logger.error(f"fsync: Error during _flush_buffer for {key}: {e}", exc_info=True)
                 # Decide if we should raise FuseOSError(errno.EIO) here or just log
@@ -1403,8 +1405,8 @@ class ACSFuse(Operations):
             
         # Clean up the read buffer too
         if self.read_buffer.get(key):
-            logger.debug(f"release: Removing read buffer for {key}")
-            self.read_buffer.remove(key)
+            logger.debug(f"release: Removing read buffer for {key}, not implemented")
+            #self.read_buffer.remove(key)
             
         logger.debug(f"release: Finished for {path}")
         time_function("release", start_time)
