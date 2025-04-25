@@ -19,13 +19,13 @@ import shutil
 import math
 
 # Buffer configuration
-MIN_TTL = 60  # 1 minute TTL for small files (≤ 1KB)
-MAX_TTL = 36000  # 600 minutes (10 hours) TTL for large files (≥ 100GB)
+MIN_TTL = 300  # 5 minutes TTL for small files (≤ 1KB)
+MAX_TTL = 86400  # 24 hours TTL for large files (≥ 100GB)
 MIN_SIZE = 1024  # 1 KB
 MAX_SIZE = 100 * 1024 * 1024 * 1024  # 100 GB
 # --- Spool Size ---
-# Spool to disk after 10GB in RAM for buffer entries
-DEFAULT_SPOOL_MAX_SIZE = 10 * 1024 * 1024 * 1024 
+# Spool to disk after 32GB in RAM for buffer entries
+DEFAULT_SPOOL_MAX_SIZE = 32 * 1024 * 1024 * 1024  # 32GB
 
 def calculate_ttl(size: int) -> int:
     """
@@ -174,6 +174,7 @@ class ReadBuffer:
         self.buffer = {}  # Simple dict for faster lookups
         self.lock = RLock()  # Reentrant lock for nested operations
         self._total_size = 0  # Track approximate memory usage
+        self._lock_timeout = 5.0  # 5 second timeout for lock acquisition
         
         # Setup finalizer to clean up timers and files
         self._finalizer = weakref.finalize(self, self._cleanup_resources, self.buffer.copy())
@@ -192,34 +193,59 @@ class ReadBuffer:
                 entry.close()
         logger.debug("ReadBuffer Finalizer: Cleanup complete.")
 
-    def get(self, key: str, offset=0, size=None) -> bytes:
-        """
-        Get data from buffer and update access time.
+    def _timed_lock_acquire(self, operation_name):
+        """Attempt to acquire lock with timeout and logging"""
+        start_time = time.time()
+        acquired = self.lock.acquire(timeout=self._lock_timeout)
+        elapsed = time.time() - start_time
         
-        Args:
-            key (str): The key identifying the file
-            offset (int): Starting offset for read
-            size (int, optional): Amount to read, or None for all
+        if acquired:
+            if elapsed > 0.1:  # Log slow lock acquisitions
+                logger.warning(f"ReadBuffer lock acquisition for {operation_name} took {elapsed:.4f} seconds")
+            return True
+        else:
+            logger.error(f"ReadBuffer lock acquisition timeout ({self._lock_timeout}s) for {operation_name}")
+            return False
+
+    def get(self, key: str, offset=0, size=None) -> bytes:
+        """Get data from buffer with enhanced timing and lock monitoring"""
+        start_time = time.time()
+        
+        if not self._timed_lock_acquire(f"get({key})"):
+            return None
             
-        Returns:
-            bytes: The file content or None if not in buffer
-        """
-        with self.lock:
+        try:
             entry = self.buffer.get(key)
             if entry:
                 # Update last access time
                 entry.last_access = time.time()
                 
-                # Reset TTL timer
+                # Reset TTL timer with timing
+                timer_start = time.time()
                 if entry.timer:
                     entry.timer.cancel()
                 entry.timer = threading.Timer(entry.ttl, lambda: self.remove(key))
                 entry.timer.daemon = True
                 entry.timer.start()
+                timer_elapsed = time.time() - timer_start
+                if timer_elapsed > 0.1:
+                    logger.warning(f"Timer reset for {key} took {timer_elapsed:.4f} seconds")
                 
-                # Return data (whole or partial)
-                return entry.get_data(offset, size)
+                # Return data with timing
+                data_start = time.time()
+                result = entry.get_data(offset, size)
+                data_elapsed = time.time() - data_start
+                if data_elapsed > 0.1:
+                    logger.warning(f"Data retrieval for {key} took {data_elapsed:.4f} seconds")
+                return result
             return None
+        finally:
+            self.lock.release()
+            total_elapsed = time.time() - start_time
+            if total_elapsed > 0.5:  # Log operations taking more than 500ms
+                logger.warning(f"Complete get operation for {key} took {total_elapsed:.4f} seconds")
+            else:
+                logger.debug(f"Complete get operation for {key} took {total_elapsed:.4f} seconds")
 
     def put(self, key: str, data: bytes) -> None:
         """
@@ -311,24 +337,72 @@ class ReadBuffer:
 
 class WriteBuffer:
     """
-    High-performance write buffer using SpooledTemporaryFile to handle large files efficiently.
-    
-    Uses an in-memory buffer up to a certain size, then spills to disk automatically.
-    
-    Attributes:
-        buffers (dict): Dictionary mapping keys to SpooledTemporaryFile objects
-        lock (threading.RLock): Lock for thread-safe operations
-        _total_size (int): Approximate memory usage/disk space of buffer contents
-        SPOOL_MAX_SIZE (int): Max size (bytes) to keep in memory before spilling to disk.
+    High-performance write buffer using SpooledTemporaryFile with enhanced monitoring.
     """
     
     def __init__(self):
-        """Initialize an empty write buffer manager."""
-        self.buffers = {}  # Dictionary to store file buffers (SpooledTemporaryFile)
-        self.lock = RLock()  # Lock for thread-safe buffer access
-        # Note: _total_size now represents potential disk usage as well
-        self._total_size = 0  
+        self.buffers = {}
+        self.lock = RLock()
+        self._total_size = 0
+        self._lock_timeout = 5.0  # 5 second timeout for lock acquisition
         
+    def _timed_lock_acquire(self, operation_name):
+        """Attempt to acquire lock with timeout and logging"""
+        start_time = time.time()
+        acquired = self.lock.acquire(timeout=self._lock_timeout)
+        elapsed = time.time() - start_time
+        
+        if acquired:
+            if elapsed > 0.1:
+                logger.warning(f"WriteBuffer lock acquisition for {operation_name} took {elapsed:.4f} seconds")
+            return True
+        else:
+            logger.error(f"WriteBuffer lock acquisition timeout ({self._lock_timeout}s) for {operation_name}")
+            return False
+
+    def write(self, key: str, data: bytes, offset: int) -> int:
+        """Write data with enhanced monitoring and timeout protection"""
+        start_time = time.time()
+        
+        if not self._timed_lock_acquire(f"write({key})"):
+            raise IOError("Failed to acquire lock for write operation")
+            
+        try:
+            if key not in self.buffers:
+                logger.warning(f"Write called on non-initialized buffer {key}. Auto-initializing.")
+                self.initialize_buffer(key)
+
+            buffer = self.buffers[key]
+            
+            # Track size changes
+            original_size = self.get_size(key)
+            potential_end_offset = offset + len(data)
+            size_increase = max(0, potential_end_offset - original_size)
+            self._total_size += size_increase
+
+            # Perform write with timing
+            write_start = time.time()
+            buffer.seek(offset)
+            bytes_written = buffer.write(data)
+            write_elapsed = time.time() - write_start
+            
+            if write_elapsed > 0.1:
+                logger.warning(f"Buffer write operation for {key} took {write_elapsed:.4f} seconds")
+            
+            if bytes_written != len(data):
+                logger.error(f"Partial write occurred for {key}! Expected {len(data)}, wrote {bytes_written}")
+                self._total_size -= (len(data) - bytes_written)
+                
+            return bytes_written
+            
+        finally:
+            self.lock.release()
+            total_elapsed = time.time() - start_time
+            if total_elapsed > 0.5:
+                logger.warning(f"Complete write operation for {key} took {total_elapsed:.4f} seconds")
+            else:
+                logger.debug(f"Complete write operation for {key} took {total_elapsed:.4f} seconds")
+
     def initialize_buffer(self, key: str, data: bytes = b"") -> None:
         """
         Initialize a buffer for a file using SpooledTemporaryFile.
@@ -358,51 +432,6 @@ class WriteBuffer:
                 # Current behavior: do nothing if exists. Consider if overwrite is needed.
                 logger.warning(f"initialize_buffer called for existing key {key}. Ignoring.")
 
-    def write(self, key: str, data: bytes, offset: int) -> int:
-        """
-        Write data to a SpooledTemporaryFile buffer at the specified offset.
-        
-        Args:
-            key (str): The key identifying the file
-            data (bytes): The data to write
-            offset (int): The offset at which to write the data
-            
-        Returns:
-            int: The number of bytes written
-        """
-        with self.lock:
-            if key not in self.buffers:
-                # Auto-initialize if write is called before initialize
-                logger.warning(f"Write called on non-initialized buffer {key}. Initializing.")
-                self.initialize_buffer(key) 
-                # If initialization failed somehow, raise error? For now, assume it works.
-
-            buffer = self.buffers[key]
-            
-            # --- Size Tracking ---
-            # This is trickier with overwrites. We estimate the increase.
-            original_size = self.get_size(key) # Get current size before write
-            potential_end_offset = offset + len(data)
-            size_increase = max(0, potential_end_offset - original_size)
-            self._total_size += size_increase
-            # --- End Size Tracking ---
-
-            buffer.seek(offset)
-            bytes_written = buffer.write(data)
-
-            if bytes_written != len(data):
-                 logger.error(f"Partial write occurred for {key}! Expected {len(data)}, wrote {bytes_written}")
-                 # Adjust size tracking if write was partial
-                 self._total_size -= (len(data) - bytes_written) 
-                 # Consider raising an error?
-            
-            logger.debug(f"Wrote {bytes_written/1024/1024:.2f}MB to buffer for {key} at offset {offset/1024/1024:.2f}MB")
-            
-            # Note: Background flushing logic might need adjustment if based on memory size.
-            # SpooledTemporaryFile handles spilling transparently.
-
-            return bytes_written
-            
     def read(self, key: str, offset: int = 0, size: int = None) -> bytes:
         """
         Read contents from a SpooledTemporaryFile buffer.

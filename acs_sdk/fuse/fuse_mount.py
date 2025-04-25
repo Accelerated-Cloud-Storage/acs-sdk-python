@@ -27,6 +27,7 @@ from datetime import datetime
 from acs_sdk.client.client import ACSClient
 from acs_sdk.client.client import Session
 from acs_sdk.client.types import ListObjectsOptions
+from acs_sdk.client.exceptions import ObjectError  # Add this import
 from io import BytesIO
 from threading import Lock
 import subprocess
@@ -184,12 +185,13 @@ class ACSFuse(Operations):
         """
         Get file attributes.
         
-        This method returns the attributes of a file or directory,
-        such as size, permissions, and modification time.
+        This method returns the attributes of a file or directory.
+        For symlinks, it returns the symlink's own attributes unless
+        following is requested through fgetattr.
         
         Args:
             path (str): Path to the file or directory
-            fh (int, optional): File handle. Defaults to None.
+            fh (int, optional): File handle
             
         Returns:
             dict: File attributes
@@ -198,85 +200,148 @@ class ACSFuse(Operations):
             FuseOSError: If the file or directory does not exist
         """
         trace_op("getattr", path, fh=fh)
-        logger.debug(f"getattr requested for path: {path}")
+        logger.debug(f"getattr requested for path: {path}, fh={fh}")
         start_time = time.time()
         
-        now = datetime.now().timestamp()
-        base_stat = {
-            'st_uid': os.getuid(),
-            'st_gid': os.getgid(),
-            'st_atime': now,
-            'st_mtime': now,
-            'st_ctime': now,
-            # Ensure the blocks information indicates plentiful space
-            # This helps disk space checks pass even if statvfs isn't used
-            'st_blocks': 1000000,  # Indicate lots of blocks
-            'st_blksize': 4096,    # Standard block size
-            'st_rdev': 0,          # Not a device file
-        }
-
-        if path == '/':  
-            logger.debug(f"getattr returning root directory attributes")
-            time_function("getattr", start_time)
-            return {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2, 'st_size': 4096}
-
+        # Track symlink resolution to prevent loops
+        if not hasattr(self, '_symlink_depth'):
+            self._symlink_depth = 0
+        if self._symlink_depth > 8:  # Maximum symlink resolution depth
+            logger.error(f"getattr: Too many levels of symbolic links for {path}")
+            raise FuseOSError(errno.ELOOP)
+            
         try:
+            self._symlink_depth += 1
+            
+            now = datetime.now().timestamp()
+            base_stat = {
+                'st_uid': os.getuid(),
+                'st_gid': os.getgid(),
+                'st_atime': now,
+                'st_mtime': now,
+                'st_ctime': now,
+                'st_blksize': 4096,    # Standard block size
+                'st_rdev': 0,          # Not a device file
+            }
+
+            if path == '/':  
+                logger.debug(f"getattr returning root directory attributes")
+                time_function("getattr", start_time)
+                return {**base_stat,
+                       'st_mode': 0o40755,
+                       'st_nlink': 2,
+                       'st_size': 4096,
+                       'st_blocks': 8}  # Standard directory blocks
+
             key = self._get_path(path)
             logger.debug(f"getattr converted path to key: {key}")
-            
-            # First check if it's a directory by checking with trailing slash
-            dir_key = key if key.endswith('/') else key + '/'
-            try:
-                client_start = time.time()
-                # List objects with this prefix to check if it's a directory
-                objects = list(self.client.list_objects(
-                    self.bucket,
-                    ListObjectsOptions(prefix=dir_key, max_keys=1)
-                ))
-                logger.info(f"list_objects call for directory check {dir_key} completed in {time.time() - client_start:.4f} seconds")
-                
-                if objects:  # If we found any objects with this prefix, it's a directory
-                    result = {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2, 'st_size': 4096}
-                    logger.debug(f"getattr determined {path} is a directory. Returning attributes: {result}")
-                    time_function("getattr", start_time)
-                    return result
-            except Exception as dir_e:
-                logger.debug(f"Directory check failed for {dir_key}: {str(dir_e)}")
 
-            # If not a directory, try as a regular file
+            # First check if it's a symlink
+            symlink_key = key + '.symlink'
             try:
-                client_start = time.time()
-                metadata = self.client.head_object(self.bucket, key)
-                logger.info(f"head_object call for {key} completed in {time.time() - client_start:.4f} seconds")
+                symlink_metadata = self.client.head_object(self.bucket, symlink_key)
+                logger.info(f"getattr: Found symlink {symlink_key}")
                 
-                # Regular file
+                # Check if we should follow the symlink
+                if fh is not None or getattr(self, '_follow_symlinks', False):
+                    # Follow the symlink
+                    target = self.client.get_object(self.bucket, symlink_key).decode('utf-8')
+                    logger.debug(f"getattr following symlink {path} to {target}")
+                    # Prevent infinite recursion by temporarily removing follow flag
+                    old_follow = getattr(self, '_follow_symlinks', None)
+                    if old_follow is not None:
+                        delattr(self, '_follow_symlinks')
+                    try:
+                        return self.getattr(target, None)
+                    finally:
+                        if old_follow is not None:
+                            self._follow_symlinks = old_follow
+                else:
+                    # Return symlink attributes
+                    result = {**base_stat,
+                            'st_mode': 0o120777,  # S_IFLNK | 0777
+                            'st_size': symlink_metadata.content_length,
+                            'st_mtime': symlink_metadata.last_modified.timestamp(),
+                            'st_nlink': 1,
+                            'st_blocks': 0}  # Symlinks typically show 0 blocks
+                    logger.debug(f"getattr returning symlink attributes for {path}")
+                    time_function("getattr (symlink)", start_time)
+                    return result
+                    
+            except ObjectError:
+                # Not a symlink, continue checking for file/directory
+                pass
+
+            # Try as a regular file
+            try:
+                metadata = self.client.head_object(self.bucket, key)
+                # Calculate actual blocks based on size
+                blocks = (metadata.content_length + base_stat['st_blksize'] - 1) // base_stat['st_blksize']
                 result = {**base_stat,
-                        'st_mode': 0o100644,  # Regular file mode
+                        'st_mode': 0o100644,  # S_IFREG | 0644
                         'st_size': metadata.content_length,
                         'st_mtime': metadata.last_modified.timestamp(),
-                        'st_nlink': 1}
-                logger.debug(f"getattr determined {path} is a file. Returning attributes: {result}")
-                time_function("getattr", start_time)
+                        'st_nlink': 1,
+                        'st_blocks': blocks}
+                logger.debug(f"getattr returning file attributes for {path}")
+                time_function("getattr (file)", start_time)
                 return result
-            except Exception as e:
-                if "NoSuchKey" in str(e):
-                    logger.debug(f"Object {key} does not exist")
-                else:
-                    logger.error(f"Error checking file {key}: {str(e)}", exc_info=True)
-                time_function("getattr", start_time)
-                raise FuseOSError(errno.ENOENT)
-                
+            except ObjectError:
+                # Not a regular file, try as directory
+                pass
+
+            # Check if it's a directory
+            dir_key = key if key.endswith('/') else key + '/'
+            try:
+                # Try to find directory marker first
+                dir_metadata = self.client.head_object(self.bucket, dir_key)
+                result = {**base_stat,
+                        'st_mode': 0o40755,
+                        'st_nlink': 2,
+                        'st_size': 4096,
+                        'st_blocks': 8,  # Standard directory blocks
+                        'st_mtime': dir_metadata.last_modified.timestamp()}
+                logger.debug(f"getattr returning directory attributes for {path}")
+                time_function("getattr (directory)", start_time)
+                return result
+            except ObjectError:
+                # No directory marker, check for objects with this prefix
+                try:
+                    objects = list(self.client.list_objects(
+                        self.bucket,
+                        ListObjectsOptions(prefix=dir_key, max_keys=1)
+                    ))
+                    if objects:
+                        result = {**base_stat,
+                                'st_mode': 0o40755,
+                                'st_nlink': 2,
+                                'st_size': 4096,
+                                'st_blocks': 8}  # Standard directory blocks
+                        logger.debug(f"getattr returning directory attributes for {path} (has children)")
+                        time_function("getattr (directory with children)", start_time)
+                        return result
+                except Exception as e:
+                    logger.warning(f"Error checking directory contents for {dir_key}: {str(e)}")
+
+            logger.debug(f"getattr: Path {path} does not exist")
+            time_function("getattr (not found)", start_time)
+            raise FuseOSError(errno.ENOENT)
+
+        except FuseOSError:
+            raise
         except Exception as e:
             logger.error(f"getattr error for {path}: {str(e)}", exc_info=True)
-            time_function("getattr", start_time)
-            raise FuseOSError(errno.ENOENT)
+            time_function("getattr (error)", start_time)
+            raise FuseOSError(errno.EIO)
+        finally:
+            self._symlink_depth -= 1
 
     def readdir(self, path, fh):
         """
         List directory contents.
         
         This method returns the contents of a directory, including
-        files and subdirectories.
+        files, subdirectories, and symlinks (without the .symlink suffix).
         
         Args:
             path (str): Path to the directory
@@ -288,63 +353,98 @@ class ACSFuse(Operations):
         Raises:
             FuseOSError: If an error occurs while listing the directory
         """
+        trace_op("readdir", path, fh=fh)
         logger.debug(f"readdir requested for path: {path}")
         start_time = time.time()
         
         try:
-            prefix = self._get_path(path)
-            if prefix and not prefix.endswith('/'):
-                prefix += '/'
-            logger.debug(f"readdir using prefix: {prefix}")
-
-            entries = {'.', '..'}
+            # Handle root directory specially
+            if path == '/':
+                prefix = ''
+            else:
+                prefix = self._get_path(path)
+                # Ensure prefix ends with / for directory listing
+                if not prefix.endswith('/'):
+                    prefix += '/'
+            
+            logger.debug(f"readdir using prefix: '{prefix}'")
+            entries = {'.', '..'}  # Start with . and ..
             
             try:
-                # Get all objects with prefix
+                # List all objects with the prefix
                 client_start = time.time()
-                # Convert iterator to list to log raw results
-                all_objects_list = list(self.client.list_objects(
+                all_objects = list(self.client.list_objects(
                     self.bucket,
                     ListObjectsOptions(prefix=prefix)
                 ))
-                logger.info(f"list_objects call for {prefix} completed in {time.time() - client_start:.4f} seconds")
-                logger.debug(f"readdir raw objects from list_objects for prefix '{prefix}': {all_objects_list}")
+                logger.info(f"list_objects call for prefix '{prefix}' completed in {time.time() - client_start:.4f} seconds")
+                logger.debug(f"readdir raw objects from list_objects: {all_objects}")
                 
-                # Filter to get only immediate children
+                if not all_objects and prefix:
+                    # Check if this is actually a directory by looking for objects
+                    logger.debug(f"No objects found with prefix '{prefix}', checking if directory exists")
+                    try:
+                        # Try listing one object to verify directory exists
+                        test_objects = list(self.client.list_objects(
+                            self.bucket,
+                            ListObjectsOptions(prefix=prefix, max_keys=1)
+                        ))
+                        if not test_objects:
+                            logger.error(f"Directory {path} (prefix: {prefix}) does not exist")
+                            raise FuseOSError(errno.ENOENT)
+                    except Exception as e:
+                        logger.error(f"Error verifying directory existence for {path}: {e}")
+                        raise FuseOSError(errno.ENOENT)
+                
+                # Process the objects to extract immediate children
                 seen = set()
-                filtered_objects = []
-                for obj in all_objects_list: # Iterate over the logged list
-                    if not obj.startswith(prefix):
+                for obj_key in all_objects:
+                    if not obj_key.startswith(prefix):
                         continue
                         
-                    rel_path = obj[len(prefix):]
+                    # Get relative path from prefix
+                    rel_path = obj_key[len(prefix):]
                     if not rel_path:
                         continue
-                        
-                    # Get first segment of remaining path
+                    
+                    # Split into parts and get first component
                     parts = rel_path.split('/')
-                    if parts[0]:
-                        seen.add(parts[0] + ('/' if len(parts) > 1 else ''))
-                objects = list(seen)  # Convert filtered results back to list
+                    first_part = parts[0]
+                    if not first_part:  # Skip empty parts
+                        continue
+                    
+                    # Handle different entry types
+                    if first_part.endswith('.symlink'):
+                        # For symlinks, strip the .symlink suffix
+                        base_name = first_part[:-len('.symlink')]
+                        if base_name:
+                            seen.add(base_name)
+                            logger.debug(f"readdir: Adding symlink entry '{base_name}'")
+                    else:
+                        # For regular files and directories
+                        seen.add(first_part)
+                        logger.debug(f"readdir: Adding entry '{first_part}'")
+                        
+                        # If this is a prefix for other objects, it's a directory
+                        if len(parts) > 1:
+                            dir_name = first_part
+                            seen.add(dir_name)
+                            logger.debug(f"readdir: Adding directory entry '{dir_name}'")
                 
-                # Prepare entries
-                for key in objects:
-                    # Remove trailing slash for directory entries
-                    if key.endswith('/'):
-                        key = key[:-1]
-                    entries.add(key)
+                # Update entries with processed names
+                entries.update(seen)
                 
                 result = list(entries)
-                logger.debug(f"readdir returning entries for {path}: {result}")
+                logger.debug(f"readdir returning {len(result)} entries for {path}: {result}")
                 time_function("readdir", start_time)
                 return result
-
+                
             except Exception as e:
-                logger.error(f"Error in readdir list_objects for {prefix}: {str(e)}", exc_info=True)
-                result = list(entries)
-                time_function("readdir", start_time)
-                return result
+                logger.error(f"Error in readdir list_objects for prefix '{prefix}': {str(e)}", exc_info=True)
+                raise FuseOSError(errno.EIO)
                 
+        except FuseOSError:
+            raise
         except Exception as e:
             logger.error(f"Error in readdir for {path}: {str(e)}", exc_info=True)
             time_function("readdir", start_time)
@@ -798,45 +898,103 @@ class ACSFuse(Operations):
 
     def unlink(self, path):
         """
-        Delete a file if it exists.
-        
-        This method deletes a file from the object storage.
-        
+        Delete a file or a symbolic link.
+
+        Deletes the corresponding object from storage.
+        For symlinks, it deletes the '.symlink' object.
+        For regular files, it deletes the base object.
+
         Args:
-            path (str): Path to the file
-            
+            path (str): Path to the file or symlink
+
+        Returns:
+            int: 0 on success
+
         Raises:
-            FuseOSError: If an error occurs while deleting the file
+            FuseOSError: If an error occurs during deletion
         """
         logger.debug(f"unlink requested for path: {path}")
         start_time = time.time()
-        
-        key = self._get_path(path)
-        try:
-             # Also remove any potentially unflushed buffers
-            if self.write_buffer.has_buffer(key):
-                 logger.warning(f"Unlinking path {path} which has an active write buffer. Removing buffer.")
-                 self.write_buffer.remove(key)
-            if self.read_buffer.get(key) is not None: # Check read buffer too
-                 logger.debug(f"Removing {key} from read buffer during unlink.")
-                 self.read_buffer.remove(key)
 
-            logger.debug(f"Attempting DeleteObject for key: {key}")
-            client_start = time.time()
-            self.client.delete_object(self.bucket, key)
-            logger.info(f"delete_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-            logger.debug(f"Unlink successful for {path}")
-            time_function("unlink", start_time)
-            # Unlink usually returns 0 on success per POSIX
-            return 0
+        key = self._get_path(path)
+        symlink_key = key + '.symlink'
+        deleted = False
+        is_symlink_path = False # Flag to track if we intended to delete a symlink
+
+        try:
+            # 1. Attempt to delete the .symlink object first
+            try:
+                logger.debug(f"unlink: Attempting DeleteObject for symlink key: {symlink_key}")
+                client_start = time.time()
+                self.client.delete_object(self.bucket, symlink_key)
+                logger.info(f"unlink: delete_object call for symlink {symlink_key} completed in {time.time() - client_start:.4f} seconds")
+                deleted = True
+                is_symlink_path = True # We successfully deleted the .symlink object
+            except ObjectError as oe:
+                # Check if the error is specifically 'Not Found' / 'NoSuchKey'
+                err_details = str(oe).lower()
+                if "nosuchkey" in err_details or "not found" in err_details or "statuscode: 404" in err_details:
+                    logger.debug(f"unlink: Symlink object {symlink_key} not found. Assuming target is a regular file or already deleted.")
+                    # This is expected if the path is not a symlink, so we proceed
+                else:
+                    # Unexpected error deleting symlink object, re-raise
+                    logger.error(f"unlink: Unexpected error deleting symlink object {symlink_key}: {str(oe)}", exc_info=True)
+                    raise # Propagate unexpected errors
+            except Exception as e:
+                 # Catch other potential exceptions during the first delete attempt
+                 logger.error(f"unlink: Unexpected exception deleting symlink object {symlink_key}: {str(e)}", exc_info=True)
+                 raise # Propagate unexpected errors
+
+            # 2. If .symlink wasn't deleted, try deleting the base key (regular file)
+            if not deleted:
+                try:
+                    logger.debug(f"unlink: Attempting DeleteObject for base key: {key}")
+                    client_start = time.time()
+                    self.client.delete_object(self.bucket, key)
+                    logger.info(f"unlink: delete_object call for base key {key} completed in {time.time() - client_start:.4f} seconds")
+                    deleted = True
+                except ObjectError as oe:
+                    if "NoSuchKey" in str(oe) or "Not Found" in str(oe):
+                        logger.warning(f"unlink: Attempted to unlink non-existent path: {path} (neither {symlink_key} nor {key} found). Returning success.")
+                        # If neither .symlink nor base key exists, it's already gone. POSIX allows this.
+                        time_function("unlink (not found)", start_time)
+                        return 0
+                    else:
+                        # Unexpected error deleting base object
+                        logger.error(f"unlink: Error deleting base object {key}: {str(oe)}", exc_info=True)
+                        raise # Propagate unexpected errors
+
+            # 3. Clean up buffers if deletion was successful
+            if deleted:
+                logger.debug(f"unlink: Cleaning up buffers for path {path} (key: {key}, symlink_key: {symlink_key})")
+                # Always try removing both potential buffer entries
+                if self.write_buffer.has_buffer(key):
+                    logger.warning(f"Unlinking path {path} which has an active write buffer for base key {key}. Removing buffer.")
+                    self.write_buffer.remove(key)
+                if self.read_buffer.get(key) is not None:
+                    logger.debug(f"Removing {key} from read buffer during unlink.")
+                    self.read_buffer.remove(key)
+                # Also clean symlink key buffers if we deleted the symlink object
+                if is_symlink_path:
+                     if self.write_buffer.has_buffer(symlink_key):
+                          logger.warning(f"Unlinking path {path} which has an active write buffer for symlink key {symlink_key}. Removing buffer.")
+                          self.write_buffer.remove(symlink_key)
+                     if self.read_buffer.get(symlink_key) is not None:
+                          logger.debug(f"Removing {symlink_key} from read buffer during unlink.")
+                          self.read_buffer.remove(symlink_key)
+
+                logger.debug(f"Unlink successful for {path}")
+                time_function("unlink (success)", start_time)
+                return 0
+            else:
+                # Should not happen if NoSuchKey logic is correct, but as a safeguard
+                logger.error(f"unlink: Deletion attempt finished for {path} but deleted flag is False. This indicates a logic error.")
+                raise FuseOSError(errno.EIO)
+
         except Exception as e:
-            # Check if the error is "NoSuchKey" - should not be an error for unlink
-            if "NoSuchKey" in str(e):
-                 logger.warning(f"Attempted to unlink non-existent key: {key}. Returning success.")
-                 time_function("unlink", start_time)
-                 return 0 # POSIX allows unlinking non-existent files without error
-            logger.error(f"Error unlinking {key}: {str(e)}", exc_info=True)
-            time_function("unlink", start_time)
+            # Catch unexpected errors from delete attempts or buffer cleanup
+            logger.error(f"unlink: Unexpected error during unlink for {path}: {str(e)}", exc_info=True)
+            time_function("unlink (error)", start_time)
             raise FuseOSError(errno.EIO)
 
     def mkdir(self, path, mode):
@@ -1386,8 +1544,9 @@ class ACSFuse(Operations):
         """
         Get file attributes without following symlinks (like lstat).
         
-        This is crucial for libraries checking symlink support.
-        We treat any existing object as a potential symlink for lstat purposes.
+        This method returns the attributes of a file, directory, or symlink.
+        Unlike getattr, it does not follow symlinks but returns the symlink's
+        own attributes.
         
         Args:
             path (str): Path to the file or directory
@@ -1398,9 +1557,6 @@ class ACSFuse(Operations):
         Raises:
             FuseOSError: If the file or directory does not exist
         """
-        # Note: lstat is similar to getattr but *must not* follow symlinks.
-        # For our implementation, if an object exists at `path`, we report it 
-        # as a symlink. If a directory exists, report as directory.
         trace_op("lstat", path)
         logger.debug(f"lstat requested for path: {path}")
         start_time = time.time()
@@ -1426,62 +1582,98 @@ class ACSFuse(Operations):
         try:
             key = self._get_path(path)
             logger.debug(f"lstat converted path to key: {key}")
-            
-            # 1. Try as a potential file/symlink object first
+
+            # 1. Check if it's a symlink FIRST (key.symlink exists)
+            symlink_key = key + '.symlink'
             try:
                 client_start = time.time()
-                metadata = self.client.head_object(self.bucket, key)
-                logger.info(f"lstat: head_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-                
-                # If head_object succeeds, report as a symlink
+                metadata = self.client.head_object(self.bucket, symlink_key)
+                logger.info(f"lstat: head_object check for symlink {symlink_key} successful in {time.time() - client_start:.4f} seconds")
+
+                # It IS a symlink - return symlink attributes
                 result = {**base_stat,
-                        'st_mode': 0o120777,  # S_IFLNK | 0777 (Symbolic link permissions)
+                        'st_mode': 0o120777,  # S_IFLNK | 0777
                         'st_size': metadata.content_length, # Size is the length of the target path string
                         'st_mtime': metadata.last_modified.timestamp(),
                         'st_blocks': 0, # Symlinks usually have 0 blocks
                         'st_nlink': 1}
-                logger.debug(f"lstat determined {path} is an object (reporting as symlink). Returning attributes: {result}")
-                time_function("lstat", start_time)
+                logger.debug(f"lstat determined {path} is a symlink. Returning attributes: {result}")
+                time_function("lstat (symlink)", start_time)
                 return result
+            except ObjectError:
+                # Not a symlink, proceed to check for file/directory
+                logger.debug(f"lstat: Path {path} is not a symlink ({symlink_key} not found). Checking file/dir...")
             except Exception as e:
-                # Handle cases where the object doesn't exist or other head errors occurred
-                if "NoSuchKey" in str(e) or "Not Found" in str(e):
-                    logger.debug(f"lstat: Object {key} does not exist. Will check for directory.")
-                else:
-                    # Log unexpected errors during head_object but proceed to directory check
-                    logger.warning(f"lstat: Error checking object {key}: {str(e)}. Proceeding to check directory.", exc_info=True)
-                pass # Fall through to directory check
+                # Log other errors but proceed cautiously
+                logger.warning(f"lstat: Error checking for symlink {symlink_key}: {str(e)}. Proceeding.")
 
-            # 2. If not found as an object, check if it's a directory prefix
-            dir_key = key if key.endswith('/') else key + '/'
+            # 2. Try as a regular file (if not a symlink)
             try:
                 client_start = time.time()
-                # List objects with this prefix to check if it's a directory
-                # Check for max_keys=1 to be efficient
-                objects = list(self.client.list_objects(
-                    self.bucket,
-                    ListObjectsOptions(prefix=dir_key, max_keys=1)
-                ))
-                logger.info(f"lstat: list_objects call for directory check {dir_key} completed in {time.time() - client_start:.4f} seconds")
-                
-                if objects:  # If we found any objects with this prefix, it's a directory
-                    result = {**base_stat, 'st_mode': 0o40755, 'st_nlink': 2, 'st_size': 4096, 'st_mtime': now}
-                    logger.debug(f"lstat determined {path} is a directory. Returning attributes: {result}")
-                    time_function("lstat", start_time)
-                    return result
-                else:
-                    # If list_objects is empty, it is not a directory either
-                    logger.debug(f"lstat: Directory check for {dir_key} returned no objects.")
-                    time_function("lstat", start_time)
-                    raise FuseOSError(errno.ENOENT)
-            except FuseOSError: # Re-raise ENOENT if thrown above
-                 raise
-            except Exception as dir_e:
-                logger.error(f"lstat: Error during directory check for {dir_key}: {str(dir_e)}", exc_info=True)
-                time_function("lstat", start_time)
-                # If directory check fails unexpectedly, report as non-existent
-                raise FuseOSError(errno.ENOENT)
-                
+                metadata = self.client.head_object(self.bucket, key)
+                logger.info(f"lstat: head_object check for file {key} completed in {time.time() - client_start:.4f} seconds")
+
+                # Regular file
+                result = {**base_stat,
+                        'st_mode': 0o100644,  # S_IFREG | 0644
+                        'st_size': metadata.content_length,
+                        'st_mtime': metadata.last_modified.timestamp(),
+                        'st_blocks': (metadata.content_length + 4095) // 4096, # Estimate blocks
+                        'st_nlink': 1}
+                logger.debug(f"lstat determined {path} is a file. Returning attributes: {result}")
+                time_function("lstat (file)", start_time)
+                return result
+            except ObjectError:
+                # Not a regular file, continue to directory check
+                logger.debug(f"lstat: Path {path} is not a regular file ({key} not found). Checking directory...")
+            except Exception as e:
+                logger.warning(f"lstat: Error checking for file {key}: {str(e)}. Proceeding.")
+
+            # 3. Check if it's a directory (if not a symlink or file)
+            # Check for directory marker object OR presence of objects under prefix
+            dir_key_marker = key + '/' # Object storage convention for empty dir
+            try:
+                 # First, check if an explicit directory marker object exists
+                 client_start_head = time.time()
+                 dir_metadata = self.client.head_object(self.bucket, dir_key_marker)
+                 logger.info(f"lstat: Found directory marker object {dir_key_marker} in {time.time() - client_start_head:.4f}s")
+                 is_directory = True
+                 dir_mtime = dir_metadata.last_modified.timestamp()
+            except ObjectError:
+                 # No marker object, check if objects exist *under* this prefix
+                 logger.debug(f"lstat: No directory marker found for {dir_key_marker}. Checking for objects with prefix...")
+                 client_start_list = time.time()
+                 try:
+                     objects = list(self.client.list_objects(
+                         self.bucket,
+                         # Use the key itself if it already ends with /, otherwise add /
+                         ListObjectsOptions(prefix=(key if key.endswith('/') else key + '/'), max_keys=1)
+                     ))
+                     logger.info(f"lstat: list_objects check for prefix {key}/ completed in {time.time() - client_start_list:.4f} seconds. Found {len(objects)} object(s)." )
+                     is_directory = bool(objects) # It's a directory if any objects have this prefix
+                     # Use current time for directory mtime if based on listing
+                     dir_mtime = now
+                 except Exception as list_e:
+                     logger.warning(f"lstat: list_objects check failed for prefix {key}/: {str(list_e)}")
+                     is_directory = False # Treat as not found if list fails
+
+            if is_directory:
+                 result = {**base_stat,
+                         'st_mode': 0o40755, # S_IFDIR | 0755
+                         'st_nlink': 2, # Directories usually have link count 2 (., ..)
+                         'st_size': 4096, # Standard directory size
+                         'st_mtime': dir_mtime, # Use marker mtime if available
+                         'st_blocks': 8 # Standard blocks for a directory
+                         }
+                 logger.debug(f"lstat determined {path} is a directory. Returning attributes: {result}")
+                 time_function("lstat (directory)", start_time)
+                 return result
+
+            # 4. If we get here, path doesn't exist as symlink, file, or directory
+            logger.debug(f"lstat: Path {path} does not exist as symlink, file, or directory")
+            time_function("lstat (not found)", start_time)
+            raise FuseOSError(errno.ENOENT)
+
         except FuseOSError: # Re-raise ENOENT from inner blocks
              raise
         except Exception as e:
@@ -1533,56 +1725,73 @@ class ACSFuse(Operations):
         
         return result
 
-    def symlink(self, source, target):
+    def symlink(self, target, source):
         """
-        Create a symbolic link to an existing file or directory.
-        
-        Hugging Face uses symlinks for efficient caching. For object storage,
-        we implement this by creating an object at the target path whose content
-        is the source path string.
-        
+        Create a symbolic link.
+
+        Creates an object with a special .symlink suffix to identify it as a symlink.
+        The object's content is the path the link points to (the source).
+        Handles both absolute and relative paths correctly.
+
         Args:
-            source (str): Source path (target of the symlink)
-            target (str): Target path (path where the symlink is created)
-            
+            target (str): The path where the symbolic link file itself should be created.
+            source (str): The path the symbolic link should point to (its content).
+
         Returns:
             int: 0 on success
+
+        Raises:
+            FuseOSError: If an error occurs during symlink creation.
         """
         trace_op("symlink", target, source=source)
-        logger.info(f"symlink requested from {source} to {target}")
+        logger.info(f"symlink requested for target path '{target}' pointing to source '{source}'")
         start_time = time.time()
-        
+
         try:
             # Target path is where the symlink "file" will be created
             target_key = self._get_path(target)
-            
-            # The *content* of the symlink file will be the source path
+            logger.debug(f"symlink: Creating symlink at target_key '{target_key}' pointing to source content '{source}'")
+
+            # Add .symlink suffix to identify this as a symlink
+            symlink_key = target_key + '.symlink'
+            logger.debug(f"symlink: Using S3 key '{symlink_key}' for the symlink object")
+
+            # Store the source path exactly as provided
+            # For symlinks, we want to preserve the exact path as given
             symlink_content = source.encode('utf-8')
-            
-            # Invalidate read buffer for the symlink path in case it existed before
-            logger.debug(f"symlink: Invalidating read buffer for potential prior {target_key}")
+            logger.debug(f"symlink: Encoded source content '{source}' to {len(symlink_content)} bytes for S3 object body")
+
+            # Invalidate read buffer for the target path and the .symlink key
+            logger.debug(f"symlink: Invalidating read buffer for potential prior {target_key} and {symlink_key}")
             self.read_buffer.remove(target_key)
+            self.read_buffer.remove(symlink_key)
 
             # Write the symlink object
-            logger.debug(f"Creating symlink object at {target_key} pointing to {source}")
+            logger.debug(f"symlink: Creating S3 object {symlink_key} with content pointing to {source}")
             client_start = time.time()
-            self.client.put_object(self.bucket, target_key, symlink_content)
-            logger.info(f"put_object call for symlink {target_key} completed in {time.time() - client_start:.4f} seconds")
-            logger.debug(f"symlink created from {source} to {target}")
-            
+            try:
+                self.client.put_object(self.bucket, symlink_key, symlink_content)
+                logger.info(f"symlink: Successfully created S3 symlink object {symlink_key} in {time.time() - client_start:.4f} seconds")
+            except Exception as put_e:
+                logger.error(f"symlink: Failed to put_object for symlink {symlink_key}: {str(put_e)}", exc_info=True)
+                raise
+
+            logger.debug(f"symlink: Successfully created symlink '{target}' pointing to '{source}'")
             time_function("symlink", start_time)
             return 0
         except Exception as e:
-            logger.error(f"Error creating symlink from {source} to {target}: {str(e)}", exc_info=True)
+            logger.error(f"symlink: Error creating symlink '{target}' pointing to '{source}': {str(e)}", exc_info=True)
             time_function("symlink", start_time)
+            if isinstance(e, FileExistsError):
+                raise FuseOSError(errno.EEXIST)
             raise FuseOSError(errno.EIO)
-            
+
     def readlink(self, path):
         """
         Read the target of a symbolic link.
         
-        Retrieves the content of the object representing the symlink,
-        which contains the source path.
+        Retrieves the content of the .symlink object, which contains the source path.
+        Returns the exact path stored in the symlink.
         
         Args:
             path (str): Path to the symlink
@@ -1597,31 +1806,37 @@ class ACSFuse(Operations):
         logger.debug(f"readlink requested for path: {path}")
         start_time = time.time()
         
-        key = self._get_path(path)
         try:
-            # Get the content of the symlink object
-            logger.debug(f"Getting object content for symlink key: {key}")
-            client_start = time.time()
-            data = self.client.get_object(self.bucket, key)
-            logger.info(f"get_object call for symlink {key} completed in {time.time() - client_start:.4f} seconds")
+            key = self._get_path(path)
+            symlink_key = key + '.symlink'
             
-            # Decode the content (which is the source path)
-            source_path = data.decode('utf-8')
+            try:
+                # Get the content of the symlink object
+                logger.debug(f"Getting object content for symlink key: {symlink_key}")
+                client_start = time.time()
+                data = self.client.get_object(self.bucket, symlink_key)
+                logger.info(f"get_object call for symlink {symlink_key} completed in {time.time() - client_start:.4f} seconds")
                 
-            logger.debug(f"readlink returning source path: {source_path}")
-            time_function("readlink", start_time)
-            # Return the raw source path as stored
-            return source_path
-        except ObjectError as oe:
-            # If the object doesn't exist, it's not a valid symlink
-            logger.error(f"readlink failed: Object {key} not found. {str(oe)}")
-            time_function("readlink", start_time)
-            raise FuseOSError(errno.ENOENT)
+                # Return the exact path stored in the symlink
+                source_path = data.decode('utf-8')
+                logger.debug(f"readlink returning target path: {source_path}")
+                time_function("readlink", start_time)
+                return source_path
+                
+            except ObjectError as oe:
+                # If the object doesn't exist, it's not a valid symlink
+                logger.error(f"readlink failed: Object {symlink_key} not found. {str(oe)}")
+                time_function("readlink", start_time)
+                raise FuseOSError(errno.ENOENT)
+            except Exception as e:
+                logger.error(f"Error reading symlink {symlink_key}: {str(e)}", exc_info=True)
+                time_function("readlink", start_time)
+                raise FuseOSError(errno.EINVAL)
+                
         except Exception as e:
-            logger.error(f"Error reading symlink {key}: {str(e)}", exc_info=True)
+            logger.error(f"Error in readlink for {path}: {str(e)}", exc_info=True)
             time_function("readlink", start_time)
-            # EINVAL is often used for "not a symlink" or other issues
-            raise FuseOSError(errno.EINVAL) 
+            raise FuseOSError(errno.EIO)
 
     def access(self, path, mode):
         """
@@ -1733,8 +1948,8 @@ class ACSFuse(Operations):
 
     def getxattr(self, path, name, position=0):
         """
-        Get extended attributes for a file or directory.
-        
+        Get extended attributes for a file, directory, or symlink.
+
         This method supports common extended attributes needed by applications like HuggingFace:
         - user.mime_type: MIME type of the file
         - user.content_length: Size of the file
@@ -1742,7 +1957,8 @@ class ACSFuse(Operations):
         - user.last_modified: Last modification time
         - security.capability: Security capabilities
         - system.posix_acl_access: POSIX ACL access info
-        
+        - user.symlink_target: For symlinks, contains the target path
+
         Args:
             path (str): Path to the file
             name (str): Name of the extended attribute
@@ -1764,66 +1980,140 @@ class ACSFuse(Operations):
                 if name == 'user.mime_type':
                     return b'inode/directory'
                 elif name == 'security.capability':
-                    # Standard directory capabilities
-                    return b'\x01\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+                    # Standard capability set for directories
+                    return b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
                 raise FuseOSError(errno.ENODATA)
 
             key = self._get_path(path)
             
-            # First check if it's a directory by checking with trailing slash
-            dir_key = key if key.endswith('/') else key + '/'
+            # --- Check 1: Is it a symlink? ---
+            symlink_key = key + '.symlink'
             try:
-                client_start = time.time()
-                objects = list(self.client.list_objects(
-                    self.bucket,
-                    ListObjectsOptions(prefix=dir_key, max_keys=1)
-                ))
-                logger.info(f"getxattr: list_objects call for directory check {dir_key} completed in {time.time() - client_start:.4f} seconds")
-                
-                if objects:  # It's a directory
-                    if name == 'user.mime_type':
-                        return b'inode/directory'
-                    elif name == 'security.capability':
-                        return b'\x01\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-                    raise FuseOSError(errno.ENODATA)
-            except Exception as e:
-                logger.debug(f"Directory check failed for {dir_key}: {str(e)}")
-                pass  # Fall through to file check
+                client_start_sym = time.time()
+                symlink_metadata = self.client.head_object(self.bucket, symlink_key)
+                logger.info(f"getxattr: Confirmed path {path} IS a symlink via {symlink_key} in {time.time() - client_start_sym:.4f} seconds")
 
-            # Try as a regular file
+                # It IS a symlink - handle symlink attributes
+                if name == 'user.mime_type':
+                    time_function("getxattr (symlink - mime)", start_time)
+                    return b'inode/symlink'
+                elif name == 'user.symlink_target':
+                    target_data = self.client.get_object(self.bucket, symlink_key)
+                    logger.debug(f"getxattr: Read target '{target_data.decode('utf-8', errors='ignore')}' for symlink {path}")
+                    time_function("getxattr (symlink - target)", start_time)
+                    return target_data
+                elif name == 'security.capability':
+                    # Standard capability set for symlinks
+                    time_function("getxattr (symlink - capability)", start_time)
+                    return b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+                elif name == 'user.content_length':
+                    result = str(symlink_metadata.content_length).encode('utf-8')
+                    time_function("getxattr (symlink - content_length)", start_time)
+                    return result
+                elif name == 'user.last_modified':
+                    result = str(int(symlink_metadata.last_modified.timestamp())).encode('utf-8')
+                    time_function("getxattr (symlink - last_modified)", start_time)
+                    return result
+                else:
+                    logger.debug(f"getxattr: Unsupported attribute '{name}' requested for symlink {path}")
+                    time_function("getxattr (symlink - no data)", start_time)
+                    raise FuseOSError(errno.ENODATA)
+
+            except ObjectError:
+                # Not a symlink, proceed to check for file/directory
+                logger.debug(f"getxattr: Path {path} is not a symlink ({symlink_key} not found). Checking file/dir...")
+            except Exception as e:
+                # Log other errors but proceed cautiously
+                logger.error(f"getxattr: Unexpected error checking for symlink {symlink_key}: {str(e)}. Proceeding.", exc_info=True)
+
+            # --- Check 2: Is it a regular file? ---
             try:
-                client_start = time.time()
+                client_start_file = time.time()
                 metadata = self.client.head_object(self.bucket, key)
-                logger.info(f"getxattr: head_object call for {key} completed in {time.time() - client_start:.4f} seconds")
-                
-                # Return requested attribute
+                logger.info(f"getxattr: Confirmed path {path} IS a file in {time.time() - client_start_file:.4f} seconds")
+
+                # It IS a file - handle file attributes
                 if name == 'user.mime_type':
                     mime_type = metadata.content_type or 'application/octet-stream'
-                    return mime_type.encode('utf-8')
+                    result = mime_type.encode('utf-8')
+                    time_function("getxattr (file - mime)", start_time)
+                    return result
                 elif name == 'user.content_length':
-                    return str(metadata.content_length).encode('utf-8')
+                    result = str(metadata.content_length).encode('utf-8')
+                    time_function("getxattr (file - content_length)", start_time)
+                    return result
                 elif name == 'user.etag':
-                    return metadata.etag.encode('utf-8') if metadata.etag else b''
+                    result = metadata.etag.encode('utf-8') if metadata.etag else b''
+                    time_function("getxattr (file - etag)", start_time)
+                    return result
                 elif name == 'user.last_modified':
-                    return str(int(metadata.last_modified.timestamp())).encode('utf-8')
+                    result = str(int(metadata.last_modified.timestamp())).encode('utf-8')
+                    time_function("getxattr (file - last_modified)", start_time)
+                    return result
                 elif name == 'security.capability':
-                    # Standard file capabilities
-                    return b'\x01\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+                    # Standard capability set for regular files
+                    time_function("getxattr (file - capability)", start_time)
+                    return b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
                 elif name == 'system.posix_acl_access':
-                    # Return empty ACL
+                    time_function("getxattr (file - acl)", start_time)
                     return b''
                 else:
-                    logger.debug(f"getxattr: Unsupported attribute {name} requested for {path}")
+                    logger.debug(f"getxattr: Unsupported attribute '{name}' requested for file {path}")
+                    time_function("getxattr (file - no data)", start_time)
                     raise FuseOSError(errno.ENODATA)
-                    
+
+            except ObjectError:
+                # Not a regular file
+                logger.debug(f"getxattr: Path {path} is not a regular file ({key} not found). Checking directory...")
             except Exception as e:
-                if "NoSuchKey" in str(e) or "Not Found" in str(e):
-                    logger.debug(f"getxattr: Object {key} does not exist")
-                    raise FuseOSError(errno.ENOENT)
+                logger.error(f"getxattr: Unexpected error checking for file {key}: {str(e)}. Proceeding.", exc_info=True)
+
+            # --- Check 3: Is it a directory? ---
+            dir_key_marker = key + '/'
+            is_dir = False
+            try:
+                # First, check if an explicit directory marker object exists
+                client_start_head = time.time()
+                self.client.head_object(self.bucket, dir_key_marker)
+                logger.info(f"getxattr: Found directory marker object {dir_key_marker} in {time.time() - client_start_head:.4f}s")
+                is_dir = True
+            except ObjectError:
+                # No marker object, check if objects exist *under* this prefix
+                logger.debug(f"getxattr: No directory marker found for {dir_key_marker}. Checking for objects with prefix...")
+                client_start_list = time.time()
+                try:
+                    objects = list(self.client.list_objects(
+                        self.bucket,
+                        # Use the key itself if it already ends with /, otherwise add /
+                        ListObjectsOptions(prefix=(key if key.endswith('/') else key + '/'), max_keys=1)
+                    ))
+                    logger.info(f"getxattr: list_objects check for prefix {key}/ completed in {time.time() - client_start_list:.4f} seconds. Found {len(objects)} object(s)." )
+                    if objects:
+                        is_dir = True
+                except Exception as list_e:
+                    logger.warning(f"getxattr: list_objects check failed for prefix {key}/: {str(list_e)}")
+            except Exception as head_e:
+                logger.warning(f"getxattr: Error during directory head check {dir_key_marker}: {str(head_e)}")
+
+            if is_dir:
+                logger.info(f"getxattr: Confirmed path {path} IS a directory.")
+                if name == 'user.mime_type':
+                    time_function("getxattr (dir - mime)", start_time)
+                    return b'inode/directory'
+                elif name == 'security.capability':
+                    # Standard capability set for directories
+                    time_function("getxattr (dir - capability)", start_time)
+                    return b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
                 else:
-                    logger.error(f"getxattr: Error checking file {key}: {str(e)}", exc_info=True)
-                    raise FuseOSError(errno.EIO)
-                    
+                    logger.debug(f"getxattr: Unsupported attribute '{name}' requested for directory {path}")
+                    time_function("getxattr (dir - no data)", start_time)
+                    raise FuseOSError(errno.ENODATA)
+
+            # --- Check 4: Not Found ---
+            logger.debug(f"getxattr: Path {path} not found as symlink, file, or directory.")
+            time_function("getxattr (not found)", start_time)
+            raise FuseOSError(errno.ENOENT)
+
         except FuseOSError:
             raise
         except Exception as e:
@@ -1851,27 +2141,74 @@ class ACSFuse(Operations):
         start_time = time.time()
         
         try:
-            # For directories (including root), return basic attributes
-            if path == '/' or self._is_directory(path):
-                time_function("listxattr", start_time)
-                return ['user.mime_type', 'security.capability']
-            
-            # For files, verify existence first
             key = self._get_path(path)
+
+            # Check if it's a symlink first
+            symlink_key = key + '.symlink'
+            try:
+                self.client.head_object(self.bucket, symlink_key)
+                # It IS a symlink
+                logger.debug(f"listxattr: Path {path} is a symlink.")
+                attrs = [
+                    'user.mime_type',         # inode/symlink
+                    'user.symlink_target',    # The path it points to
+                    'user.content_length',    # Length of the target path string
+                    'user.last_modified',     # Mtime of the .symlink object
+                ]
+                time_function("listxattr (symlink)", start_time)
+                return attrs
+            except ObjectError:
+                 # Not a symlink, proceed to check for file/directory
+                 logger.debug(f"listxattr: Path {path} is not a symlink ({symlink_key} not found). Checking file/dir...")
+            except Exception as e:
+                 logger.warning(f"listxattr: Error checking symlink {symlink_key}: {str(e)}. Proceeding.")
+
+            # If not a symlink, check if it's a directory
+            is_dir = False
+            try:
+                dir_key_marker = key + '/'
+                self.client.head_object(self.bucket, dir_key_marker)
+                is_dir = True
+            except ObjectError:
+                try:
+                    # Check for objects with prefix if no marker exists
+                    objects = list(self.client.list_objects(
+                        self.bucket,
+                        ListObjectsOptions(prefix=(key if key.endswith('/') else key + '/'), max_keys=1)
+                    ))
+                    if objects:
+                        is_dir = True
+                except Exception:
+                    pass # Ignore errors here, assume not directory if checks fail
+            except Exception:
+                 pass # Ignore other errors, assume not directory
+
+            if is_dir or path == '/': # Treat root as directory
+                logger.debug(f"listxattr: Path {path} is a directory.")
+                attrs = ['user.mime_type']
+                time_function("listxattr (directory)", start_time)
+                return attrs
+
+            # Assume it's a regular file if not symlink or directory
             try:
                 self.client.head_object(self.bucket, key)
-                time_function("listxattr", start_time)
-                return [
+                # It's likely a file
+                logger.debug(f"listxattr: Path {path} is likely a file.")
+                attrs = [
                     'user.mime_type',
                     'user.content_length',
                     'user.etag',
                     'user.last_modified',
-                    'security.capability',
                     'system.posix_acl_access'
                 ]
+                time_function("listxattr (file)", start_time)
+                return attrs
+            except ObjectError:
+                # Not a regular file either, path doesn't exist
+                logger.debug(f"listxattr: Path {path} does not exist as file, directory, or symlink")
+                raise FuseOSError(errno.ENOENT)
             except Exception as e:
-                if "NoSuchKey" in str(e) or "Not Found" in str(e):
-                    raise FuseOSError(errno.ENOENT)
+                logger.error(f"listxattr: Error checking for file {key}: {str(e)}", exc_info=True)
                 raise FuseOSError(errno.EIO)
                 
         except FuseOSError:
@@ -1880,6 +2217,8 @@ class ACSFuse(Operations):
             logger.error(f"listxattr error for {path}: {str(e)}", exc_info=True)
             time_function("listxattr", start_time)
             raise FuseOSError(errno.EIO)
+        finally:
+            time_function("listxattr", start_time)
 
     def _is_directory(self, path):
         """
@@ -1905,6 +2244,38 @@ class ACSFuse(Operations):
             return len(objects) > 0
         except Exception:
             return False
+
+    def fgetattr(self, path, fh=None):
+        """
+        Get file attributes when following symlinks.
+        
+        This method is called by FUSE when stat -L is used or when accessing
+        a file through a file handle. It always follows symlinks.
+        
+        Args:
+            path (str): Path to the file
+            fh (int, optional): File handle
+            
+        Returns:
+            dict: File attributes
+            
+        Raises:
+            FuseOSError: If the file does not exist
+        """
+        trace_op("fgetattr", path, fh=fh)
+        logger.debug(f"fgetattr requested for path: {path}, fh={fh}")
+        start_time = time.time()
+        
+        # Set flag to follow symlinks
+        old_follow = getattr(self, '_follow_symlinks', None)
+        self._follow_symlinks = True
+        try:
+            return self.getattr(path, fh)
+        finally:
+            if old_follow is None:
+                delattr(self, '_follow_symlinks')
+            else:
+                self._follow_symlinks = old_follow
 
 def mount(bucket: str, mountpoint: str, foreground: bool = True, allow_other: bool = False):
     """
@@ -2048,7 +2419,7 @@ def main():
         
     Options:
         --allow-other: Allow other users to access the mount
-            (requires 'user_allow_other' in /etc/fuse.conf)
+            (requires user_allow_other in /etc/fuse.conf)
         --trace: Enable detailed tracing of file operations for debugging
     """
     logger.info(f"Starting ACS FUSE CLI with arguments: {sys.argv}")

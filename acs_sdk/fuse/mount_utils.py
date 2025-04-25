@@ -108,10 +108,10 @@ def get_mount_options(foreground=True, allow_other=False):
         dict: Dictionary of mount options
     """
     # Calculate optimal buffer sizes
-    # Use 2GB for read/write buffers on modern systems
+    # Use 8GB for read/write buffers on modern systems
     BUFFER_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
-    # Use 4GB readahead for sequential access optimization
-    READAHEAD_SIZE = 4 * 1024 * 1024 * 1024  # 4GB
+    # Use 8GB readahead for sequential access optimization
+    READAHEAD_SIZE = 8 * 1024 * 1024 * 1024  # 8GB
     # Extended timeouts for better caching (24 hours)
     ATTR_TIMEOUT = 24 * 3600  # 24 hours
     
@@ -128,7 +128,6 @@ def get_mount_options(foreground=True, allow_other=False):
         
         # Enhanced I/O options
         'big_writes': True,    # Enable large write operations
-        'large_read': True,    # Enable large read operations
         'hard_remove': True,   # Improve rename/unlink operations
         'max_read': BUFFER_SIZE,
         'max_write': BUFFER_SIZE,
@@ -145,6 +144,8 @@ def get_mount_options(foreground=True, allow_other=False):
         'splice_write': True,  # Use splice for better write performance
         'splice_move': True,   # Use splice for better move operations
         'atomic_o_trunc': True,  # Enable atomic truncation
+        'max_background': 64,  # Increase background workers
+        'congestion_threshold': 48  # Set congestion threshold
     }
     
     # Only add allow_other if explicitly requested
