@@ -18,6 +18,7 @@ setup(
         "fusepy>=3.0.1",
         "requests>=2.32.3",
         "typing_extensions>=4.12.2",
+        "lz4>=4.4.4",
     ],
     extras_require={
         'dev': [
