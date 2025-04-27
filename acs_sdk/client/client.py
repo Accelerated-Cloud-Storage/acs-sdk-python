@@ -46,7 +46,6 @@ class ACSClient:
     
     # Constants 
     SERVER_ADDRESS = "acceleratedcloudstorageproduction.com:50050"
-    BASE_CHUNK_SIZE = 64 * 1024  # 64KB base chunk size for streaming
     COMPRESSION_THRESHOLD = 5 * 1024 * 1024 * 1024  # 5GB threshold for compression
     MIN_SAMPLE_SIZE = 1 * 1024 * 1024  # 1MB minimum sample size
     MAX_SAMPLE_SIZE = 256 * 1024 * 1024  # 256MB maximum sample size
@@ -88,8 +87,8 @@ class ACSClient:
         )
 
         options = [
-            ('grpc.max_send_message_length', 1024 * 1024 * 1024), # 1GB
-            ('grpc.max_receive_message_length', 1024 * 1024 * 1024), # 1GB
+            ('grpc.max_send_message_length', 1 * 1024 * 1024 * 1024), # 1GB
+            ('grpc.max_receive_message_length', 1 * 1024 * 1024 * 1024), # 1GB
             ('grpc.keepalive_time_ms', 10000), # 10 seconds
             ('grpc.keepalive_timeout_ms', 5000), # 5 seconds
             ('grpc.keepalive_permit_without_calls', True),
@@ -325,13 +324,15 @@ class ACSClient:
             
             # Calculate appropriate chunk size based on data size
             if data_len < 1024 * 1024:  # < 1MB
-                chunk_size = self.BASE_CHUNK_SIZE
+                chunk_size = 256 * 1024  # 256KB chunks for small files
             elif data_len < 10 * 1024 * 1024:  # < 10MB
-                chunk_size = 256 * 1024  # 256KB
+                chunk_size = 512 * 1024  # 512KB chunks for medium files
             elif data_len < 100 * 1024 * 1024:  # < 100MB
-                chunk_size = 1024 * 1024  # 1MB
+                chunk_size = 1 * 1024 * 1024  # 1MB chunks for large files
+            elif data_len < 1024 * 1024 * 1024:  # < 1GB
+                chunk_size = 2 * 1024 * 1024  # 2MB chunks for very large files
             else:
-                chunk_size = 4 * 1024 * 1024  # 4MB
+                chunk_size = 4 * 1024 * 1024  # 4MB chunks for huge files
             
             # Send data chunks using memory views for large objects
             for i in range(0, data_len, chunk_size):
