@@ -399,10 +399,6 @@ class ACSClient:
                     first_message = False
                     # Process metadata from first message
                     if response.HasField('metadata'):
-                        # Get estimated size if available
-                        estimated_size = getattr(response.metadata, 'size', 0)
-                        if estimated_size > 0:
-                            chunks = bytearray(estimated_size)
                         # Safely access the is_compressed field
                         try:
                             is_compressed = response.metadata.is_compressed
