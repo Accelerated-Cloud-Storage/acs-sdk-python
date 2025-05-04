@@ -15,7 +15,7 @@ import yaml
 import grpc
 from pathlib import Path
 from datetime import datetime
-import gzip
+import lz4.frame
 from typing import List, Dict, Optional, Union, Iterator
 from dataclasses import dataclass
 from acs_sdk.internal.generated import client_storage_pb2 as pb
@@ -38,13 +38,19 @@ class ACSClient:
         client (pb_grpc.ObjectStorageCacheStub): The gRPC client stub.
         SERVER_ADDRESS (str): The server address for the ACS service.
         BASE_CHUNK_SIZE (int): Base chunk size for streaming operations (64KB).
-        COMPRESSION_THRESHOLD (int): Threshold for compression (100MB).
+        COMPRESSION_THRESHOLD (int): Threshold for compression (5GB).
+        MIN_SAMPLE_SIZE (int): Minimum sample size for compression estimation (1MB).
+        MAX_SAMPLE_SIZE (int): Maximum sample size for compression estimation (256MB).
+        SAMPLE_RATIO (float): Ratio of data to sample for compression estimation (1%).
     """
     
     # Constants 
     SERVER_ADDRESS = "acceleratedcloudstorageproduction.com:50050"
-    BASE_CHUNK_SIZE = 64 * 1024  # 64KB base chunk size for streaming
-    COMPRESSION_THRESHOLD = 100 * 1024 * 1024  # 100MB threshold for compression
+    COMPRESSION_THRESHOLD = 5 * 1024 * 1024 * 1024  # 5GB threshold for compression
+    MIN_SAMPLE_SIZE = 1 * 1024 * 1024  # 1MB minimum sample size
+    MAX_SAMPLE_SIZE = 256 * 1024 * 1024  # 256MB maximum sample size
+    SAMPLE_RATIO = 0.01  # Sample 1% of the data
+    MIN_COMPRESSION_RATIO = 0.5  # Only compress if we can save at least 50%
 
     def __init__(self, session: Optional[Session] = None):
         """
@@ -81,8 +87,8 @@ class ACSClient:
         )
 
         options = [
-            ('grpc.max_send_message_length', 1024 * 1024 * 1024), # 1GB
-            ('grpc.max_receive_message_length', 1024 * 1024 * 1024), # 1GB
+            ('grpc.max_send_message_length', 1 * 1024 * 1024 * 1024), # 1GB
+            ('grpc.max_receive_message_length', 1 * 1024 * 1024 * 1024), # 1GB
             ('grpc.keepalive_time_ms', 10000), # 10 seconds
             ('grpc.keepalive_timeout_ms', 5000), # 5 seconds
             ('grpc.keepalive_permit_without_calls', True),
@@ -238,6 +244,46 @@ class ACSClient:
         response = self.client.ListBuckets(request)
         return list(response.buckets)
 
+    def _estimate_compression_ratio(self, data: bytes) -> float:
+        """
+        Estimate LZ4 compression ratio by compressing a sample of the data.
+        Sample size scales with data size: 1% of total size, bounded between 1MB and 256MB.
+        
+        Args:
+            data: The data to estimate compression for
+            
+        Returns:
+            float: Estimated compression ratio (compressed_size / original_size)
+            A ratio < 1 means compression will help, > 1 means compression will make it larger
+        """
+        total_size = len(data)
+        
+        # Calculate sample size as 1% of total size, bounded between MIN and MAX
+        target_sample_size = int(total_size * self.SAMPLE_RATIO)
+        sample_size = max(min(target_sample_size, self.MAX_SAMPLE_SIZE), self.MIN_SAMPLE_SIZE)
+        
+        # Take three samples: beginning, middle, and end
+        per_sample_size = sample_size // 3
+        samples = [
+            data[:per_sample_size],
+            data[total_size//2 - per_sample_size//2:total_size//2 + per_sample_size//2],
+            data[-per_sample_size:]
+        ]
+        
+        # Test compression ratio on samples
+        ratios = []
+        total_sample_size = 0
+        total_compressed_size = 0
+        
+        for sample in samples:
+            compressed = lz4.frame.compress(sample, compression_level=0, block_size=lz4.frame.BLOCKSIZE_MAX64KB)
+            total_sample_size += len(sample)
+            total_compressed_size += len(compressed)
+            ratios.append(len(compressed) / len(sample))
+        
+        # Return weighted average ratio
+        return total_compressed_size / total_sample_size
+
     @retry()
     def put_object(self, bucket: str, key: str, data: bytes) -> None:
         """
@@ -252,11 +298,19 @@ class ACSClient:
             ObjectError: If object upload fails.
         """
         is_compressed = False
-        if len(data) >= self.COMPRESSION_THRESHOLD:
-            compressed = gzip.compress(data, compresslevel=1)
-            if len(compressed) < len(data):
-                data = compressed
-                is_compressed = True
+        data_len = len(data)
+        
+        if data_len >= self.COMPRESSION_THRESHOLD:
+            # Estimate if compression will be beneficial
+            ratio = self._estimate_compression_ratio(data)
+            if ratio < self.MIN_COMPRESSION_RATIO:  # Only compress if we can save at least 50%
+                # Note: In lz4.frame, compression_level=0 means default level
+                compressed = memoryview(lz4.frame.compress(data, compression_level=0, block_size=lz4.frame.BLOCKSIZE_MAX64KB))
+                compressed_len = len(compressed)
+                if compressed_len < data_len:
+                    data = compressed
+                    data_len = compressed_len
+                    is_compressed = True
 
         def request_generator():
             # Send parameters first
@@ -269,20 +323,21 @@ class ACSClient:
             )
             
             # Calculate appropriate chunk size based on data size
-            total_size = len(data)
-            if total_size < 1024 * 1024:  # < 1MB
-                chunk_size = self.BASE_CHUNK_SIZE
-            elif total_size < 10 * 1024 * 1024:  # < 10MB
-                chunk_size = 256 * 1024  # 256KB
-            elif total_size < 100 * 1024 * 1024:  # < 100MB
-                chunk_size = 1024 * 1024  # 1MB
+            if data_len < 1024 * 1024:  # < 1MB
+                chunk_size = 256 * 1024  # 256KB chunks for small files
+            elif data_len < 10 * 1024 * 1024:  # < 10MB
+                chunk_size = 512 * 1024  # 512KB chunks for medium files
+            elif data_len < 100 * 1024 * 1024:  # < 100MB
+                chunk_size = 1 * 1024 * 1024  # 1MB chunks for large files
+            elif data_len < 1024 * 1024 * 1024:  # < 1GB
+                chunk_size = 2 * 1024 * 1024  # 2MB chunks for very large files
             else:
-                chunk_size = 4 * 1024 * 1024  # 4MB
+                chunk_size = 4 * 1024 * 1024  # 4MB chunks for huge files
             
-            # Send data chunks
-            for i in range(0, len(data), chunk_size):
+            # Send data chunks using memory views for large objects
+            for i in range(0, data_len, chunk_size):
                 chunk = data[i:i + chunk_size]
-                yield pb.PutObjectRequest(chunk=chunk)
+                yield pb.PutObjectRequest(chunk=bytes(chunk))
 
         self.client.PutObject(request_generator())
 
@@ -335,8 +390,9 @@ class ACSClient:
                 
             response_stream = self.client.GetObject(request)
             first_message = True
-            chunks = []
+            chunks = bytearray()  # Use bytearray for more efficient appending
             is_compressed = False
+            estimated_size = 0
             
             for response in response_stream:
                 if first_message:
@@ -347,20 +403,19 @@ class ACSClient:
                         try:
                             is_compressed = response.metadata.is_compressed
                         except AttributeError:
-                            # Log the error for debugging
                             print("Warning: Could not access is_compressed attribute in metadata")
                             is_compressed = False
                     continue
                     
                 if response.HasField('chunk'):
-                    chunks.append(response.chunk)
+                    chunks.extend(response.chunk)
             
-            data = b''.join(chunks)
+            data = bytes(chunks)
             
             # Decompress if needed
             if is_compressed:
                 try:
-                    data = gzip.decompress(data)
+                    data = lz4.frame.decompress(data)
                 except Exception as e:
                     raise ObjectError(f"Failed to decompress object: {str(e)}") from e
                     
