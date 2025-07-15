@@ -1,3 +1,8 @@
+# v0.4.2 (2025-05-03)
+
+* **Feature**: New TLS certificate 
+* **Dependency Update**: Updated to the latest SDK module versions.
+
 # v0.4.1 (2025-05-03)
 
 * **Feature**: Improve PUT/GET object performance
