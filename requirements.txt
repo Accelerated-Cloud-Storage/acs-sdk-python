@@ -1,7 +1,7 @@
 astroid==3.3.8
 black==23.12.1
 build==1.2.2.post1
-certifi==2025.1.31
+certifi==2026.10.19
 charset-normalizer==3.4.1
 click==8.1.8
 databind==4.5.2
